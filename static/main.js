@@ -1,6 +1,6 @@
 // static/main.js
 
-// ================= 摄像头 + ASR =================
+// ================= Камера + ASR =================
 (() => {
   const $camStatus = document.getElementById('camStatus');
   const $asrStatus = document.getElementById('asrStatus');
@@ -12,38 +12,38 @@
   const canvas     = document.getElementById('canvas');
   const ctx        = canvas.getContext('2d');
 
-  // === 获取/创建聊天容器（关键补丁） ===
+  // === Получение/создание контейнера чата (ключевой патч) ===
   let chatContainer = document.getElementById('chatContainer');
 
   function ensureChatContainer() {
-    // 已缓存且仍在文档中
+    // Уже закэширован и всё ещё в документе
     if (chatContainer && document.body.contains(chatContainer)) return chatContainer;
 
-    // 重新获取，防热更新或 DOM 移动
+    // Получаем заново на случай горячего обновления или перемещения DOM
     chatContainer = document.getElementById('chatContainer');
     if (!chatContainer) {
       chatContainer = document.createElement('div');
       chatContainer.id = 'chatContainer';
 
-      // 优先挂到 finalList 的父容器；否则挂到 partial 的父容器；再否则挂到 body 兜底
+      // Сначала монтируем в родителя finalList; иначе — в родителя partial; в крайнем случае — в body
       if ($finalList && $finalList.parentElement) {
-        // 隐藏原来的 finalList
+        // Скрываем исходный finalList
         $finalList.style.display = 'none';
-        // 将聊天容器挂载到 finals div 内
+        // Монтируем контейнер чата внутрь div finals
         $finalList.parentElement.appendChild(chatContainer);
-        console.log('[chat] 创建并挂载 #chatContainer 到 finalList 区域');
+        console.log('[chat] Создан #chatContainer и смонтирован в область finalList');
       } else if ($partial && $partial.parentElement) {
         $partial.parentElement.appendChild(chatContainer);
-        console.log('[chat] 创建并挂载 #chatContainer 到 partial 区域');
+        console.log('[chat] Создан #chatContainer и смонтирован в область partial');
       } else {
         document.body.appendChild(chatContainer);
-        console.warn('[chat] 未找到合适锚点，已挂到 <body>');
+        console.warn('[chat] Подходящая точка привязки не найдена, смонтирован в <body>');
       }
     }
     return chatContainer;
   }
 
-  // === 注入聊天样式（左右两侧气泡 + 时间戳，增加权重）===
+  // === Внедрение стилей чата (пузыри слева и справа + временные метки, повышенная специфичность)===
   (function injectChatStyles(){
     if (document.getElementById('chat-style-injected')) return;
     const s = document.createElement('style');
@@ -52,8 +52,8 @@
       #chatContainer{
         position: relative !important;
         overflow-y: auto !important;
-        flex: 1 !important;  /* 改为使用 flex: 1 占满剩余空间 */
-        min-height: 0 !important;  /* 确保 flex 子元素能正确收缩 */
+        flex: 1 !important;  /* используем flex: 1, чтобы занять оставшееся место */
+        min-height: 0 !important;  /* чтобы дочерние flex-элементы корректно сжимались */
         padding: 12px 12px 4px !important;
         background: #0b1020 !important;
         border: 1px solid #1d2438 !important;
@@ -61,7 +61,7 @@
         margin-top: 12px !important;
       }
       
-      /* 自定义滚动条样式 */
+      /* Пользовательский стиль полосы прокрутки */
       #chatContainer::-webkit-scrollbar {
         width: 8px !important;
       }
@@ -81,7 +81,7 @@
         background: #3a4556 !important;
       }
       
-      /* Firefox 滚动条 */
+      /* Полоса прокрутки Firefox */
       #chatContainer {
         scrollbar-width: thin !important;
         scrollbar-color: #2a3446 #0d1420 !important;
@@ -138,9 +138,9 @@
     document.head.appendChild(s);
   })();
 
-  // 聊天消息管理
+  // Управление сообщениями чата
   let lastTimestamp = 0;
-  const TIMESTAMP_INTERVAL = 5 * 60 * 1000; // 5分钟
+  const TIMESTAMP_INTERVAL = 5 * 60 * 1000; // 5 минут
   
   function shouldShowTimestamp() {
     const now = Date.now();
@@ -167,37 +167,37 @@
   }
   
   function addMessage(text, isUser = false) {
-    // 时间戳
+    // Временная метка
     if (shouldShowTimestamp()) addTimestamp();
 
     const container = ensureChatContainer();
 
-    // 行容器
+    // Контейнер строки
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${isUser ? 'user' : 'ai'}`;
 
-    // 左侧头像（AI）
+    // Аватар слева (AI)
     const avatar = document.createElement('div');
     avatar.className = 'avatar';
     avatar.textContent = isUser ? '' : 'AI';
 
-    // 气泡
+    // Пузырь
     const bubbleDiv = document.createElement('div');
     bubbleDiv.className = 'bubble';
     bubbleDiv.textContent = text;
 
     if (isUser){
-      // 右侧：气泡在右
+      // Справа: пузырь справа
       messageDiv.appendChild(bubbleDiv);
     }else{
-      // 左侧：头像 + 气泡
+      // Слева: аватар + пузырь
       messageDiv.appendChild(avatar);
       messageDiv.appendChild(bubbleDiv);
     }
 
     container.appendChild(messageDiv);
 
-    // 滚动到底部
+    // Прокрутка вниз
     container.scrollTop = container.scrollHeight;
   }
 
@@ -207,12 +207,12 @@
   }
 
   function navLabelAndText(raw) {
-    // 去掉前缀 “[导航] ”
+    // Убираем префикс «[导航] »
     const t = raw.startsWith('[导航]') ? raw.substring(4).trim() : raw;
-    // 粗略判断：含“斑马线/绿灯/红灯/黄灯/过马路”归为斑马线导航，否则盲道导航
+    // Грубая эвристика: если есть «斑马线/绿灯/红灯/黄灯/过马路» — навигация по пешеходному переходу, иначе — по тактильной дорожке
     const crossHints = ['斑马线', '绿灯', '红灯', '黄灯', '过马路'];
     const isCross = crossHints.some(k => t.includes(k));
-    const label = isCross ? '【斑马线导航】' : '【盲道导航】';
+    const label = isCross ? '【Навигация: переход】' : '【Навигация: тактильная дорожка】';
     return { label, text: `${label} ${t}` };
   }
 
@@ -274,9 +274,9 @@
       if (s.startsWith('INIT:')){
         try{
           const data = JSON.parse(s.slice(5));
-          $partial.textContent = data.partial || '（等待音频…）';
+          $partial.textContent = data.partial || '(ожидание аудио…)';
           
-          // 初始化时加载历史消息（识别 [AI] 与 [导航]）
+          // При инициализации загружаем историю сообщений (распознаём [AI] и [导航])
           if (data.finals && data.finals.length > 0) {
             data.finals.forEach(text => {
               if (text.startsWith('[AI]')) {
@@ -302,11 +302,11 @@
           addMessage(text.substring(4).trim(), false);
         } else if (text.startsWith('[导航]')) {
           const { text: show } = navLabelAndText(text);
-          addMessage(show, false); // 左侧 AI
+          addMessage(show, false); // слева — AI
         } else {
-          addMessage(text, true);  // 其它仍按右侧
+          addMessage(text, true);  // остальные — справа
         }
-        $partial.textContent = '（等待音频…）';
+        $partial.textContent = '(ожидание аудио…)';
         return;
       }
     }
@@ -314,10 +314,10 @@
 
   $btnClear.onclick = ()=> { 
     const container = ensureChatContainer();
-    // 清空聊天记录
+    // Очистка истории чата
     const messages = container.querySelectorAll('.message, .timestamp');
     messages.forEach(msg => msg.remove());
-    lastTimestamp = 0; // 重置时间戳计数
+    lastTimestamp = 0; // сброс счётчика временных меток
   };
   $btnRe.onclick    = ()=> { connectCamera(); connectASR(); };
 
@@ -326,29 +326,29 @@
 })();
 
 
-// ================= IMU 3D（无虚线框、无滚动条、上下对齐、自适应） =================
+// ================= IMU 3D (без пунктирной рамки, без полос прокрутки, выравнивание по вертикали, адаптивность) =================
 import * as THREE from 'three';
 import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders/GLTFLoader.js';
 
 (() => {
-  const container = document.getElementById('imu_view'); // 左侧3D容器
-  const hud       = document.getElementById('imu_hud');  // 右侧IMU容器
+  const container = document.getElementById('imu_view'); // левый 3D-контейнер
+  const hud       = document.getElementById('imu_hud');  // правый контейнер IMU
 
-  // 左右窗口统一半透明底色
+  // Единый полупрозрачный фон для левого и правого окон
   if (container) container.style.background = 'rgba(0,0,0,0.2)';
   if (hud) {
-    // 关键：右侧容器作为定位参考，同时禁止滚动、清理边框
+    // Ключевое: правый контейнер служит опорой для позиционирования; запрещаем прокрутку и убираем рамки
     Object.assign(hud.style, {
       position: 'relative',
       overflow: 'hidden',
       border: 'none',
       outline: 'none',
-      background: 'rgba(0,0,0,0.2)', // 右侧也给统一底色（整块），干净无额外面板底色
+      background: 'rgba(0,0,0,0.2)', // справа тоже единый фон (целиком), без дополнительного фона панели
       borderRadius: '10px'
     });
   }
 
-  // —— 彻底去掉“虚线框”和一切边框/阴影（含可能的外层壳）——
+  // —— полностью убираем «пунктирную рамку» и все рамки/тени (включая возможные внешние обёртки)——
   (function killFraming() {
     const s = document.createElement('style');
     s.textContent = `
@@ -359,7 +359,7 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
         box-shadow: none !important;
         background-image: none !important;
       }
-      /* 兜底：清除任何内联 dashed/ dotted */
+      /* на всякий случай: убираем любые inline dashed/ dotted */
       [style*="dashed"], [style*="dotted"] {
         border-style: none !important;
         outline: none !important;
@@ -367,7 +367,7 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
     `;
     document.head.appendChild(s);
 
-    // 同时清理父级（最多向上两层）里的边框与滚动条，避免外层虚线框和滚动条
+    // Также убираем рамки и полосы прокрутки у родителей (не более двух уровней вверх), чтобы не было внешней пунктирной рамки и прокрутки
     [container, hud].forEach(el => {
       let p = el ? el.parentElement : null;
       for (let i = 0; i < 2 && p; i++, p = p.parentElement) {
@@ -380,37 +380,37 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
     });
   })();
 
-  // 右侧：不再额外创建 dock 背板（直接用 hud 当整块背景）
-  // 数据面板只负责显示文字，不再自带背景与边框
+  // Справа: больше не создаём отдельную подложку dock (hud сам служит фоном целиком)
+  // Панель данных только отображает текст, без собственного фона и рамки
 
-  // three.js 渲染器
+  // Рендерер three.js
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(70, 1, 0.1, 1000);
 
-  // 画质相关
+  // Настройки качества изображения
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
-  renderer.setClearColor(0x000000, 0); // 透明背景
+  renderer.setClearColor(0x000000, 0); // прозрачный фон
 
-  // ——— 核心：左右窗口“上下齐+自适应等比” ———
+  // ——— Основное: левое и правое окна «выровнены по вертикали + адаптивно пропорциональны» ———
   let syncRaf = 0;
   function syncHeights() {
     if (!container || !hud) return;
     const w = container.clientWidth || 600;
   
-    // 可选：固定高宽比（例如 const MODEL_ASPECT = 16/9;）
-    // 如果保持 null，就以右侧面板高度为准
+    // Опционально: фиксированное соотношение сторон (например, const MODEL_ASPECT = 16/9;)
+    // Если оставить null, ориентируемся на высоту правой панели
     const MODEL_ASPECT = null;
   
     let targetH;
     if (MODEL_ASPECT && Number(MODEL_ASPECT) > 0) {
       targetH = Math.max(240, Math.round(w / Number(MODEL_ASPECT)));
     } else {
-      const padding = 40; // 右侧内边距/标题余量
+      const padding = 40; // внутренний отступ справа / запас под заголовок
       const contentH = (document.getElementById('data-panel')?.offsetHeight || 0) + padding;
       targetH = Math.max(240, contentH);
     }
@@ -430,11 +430,11 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
     syncRaf = requestAnimationFrame(syncHeights);
   }
   
-  // 初次与窗口变化时，同步左右高度
+  // При первом запуске и изменении окна синхронизируем высоту левой и правой частей
   requestSync();
   window.addEventListener('resize', requestSync);
   
-  // 数据变化时也同步（放在 updateDataPanel 内）
+  // При изменении данных тоже синхронизируем (внутри updateDataPanel)
   function updateDataPanel(roll, pitch, yaw, gx, gy, gz, ax, ay, az) {
     document.getElementById('panel-roll').textContent  = roll.toFixed(1)  + '°';
     document.getElementById('panel-pitch').textContent = pitch.toFixed(1) + '°';
@@ -446,13 +446,13 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
     document.getElementById('panel-ay').textContent    = ay.toFixed(2);
     document.getElementById('panel-az').textContent    = az.toFixed(2);
   
-    requestSync(); // 数据刷新后同步高度
+    requestSync(); // синхронизация высоты после обновления данных
   }
 
 
   container.appendChild(renderer.domElement);
 
-  // ========== 场景 ==========
+  // ========== Сцена ==========
   const group = new THREE.Group();
   scene.add(group);
 
@@ -494,12 +494,12 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
 
   function createDirectionLabels() {
     [
-      { t: '前', p: new THREE.Vector3(0, 0, 5),  c: '#00ffff' },
-      { t: '后', p: new THREE.Vector3(0, 0,-5),  c: '#00ffff' },
-      { t: '左', p: new THREE.Vector3(-5,0, 0),  c: '#ffff00' },
-      { t: '右', p: new THREE.Vector3( 5,0, 0),  c: '#ffff00' },
-      { t: '上', p: new THREE.Vector3(0, 5, 0),  c: '#ff00ff' },
-      { t: '下', p: new THREE.Vector3(0,-5, 0),  c: '#ff00ff' },
+      { t: 'Вперёд', p: new THREE.Vector3(0, 0, 5),  c: '#00ffff' },
+      { t: 'Назад', p: new THREE.Vector3(0, 0,-5),  c: '#00ffff' },
+      { t: 'Влево', p: new THREE.Vector3(-5,0, 0),  c: '#ffff00' },
+      { t: 'Вправо', p: new THREE.Vector3( 5,0, 0),  c: '#ffff00' },
+      { t: 'Вверх', p: new THREE.Vector3(0, 5, 0),  c: '#ff00ff' },
+      { t: 'Вниз', p: new THREE.Vector3(0,-5, 0),  c: '#ff00ff' },
     ].forEach(d => scene.add(createAxisLabel(d.t, d.p, d.c)));
   }
   createDirectionLabels();
@@ -507,7 +507,7 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
   camera.position.set(4,4,6);
   camera.lookAt(0,0,0);
 
-  // ========== 右侧 IMU 数据展示（干净：无背景、无边框、无滚动条） ==========
+  // ========== Отображение данных IMU справа (чисто: без фона, рамки и полос прокрутки) ==========
   function createDataPanel() {
     const panel = document.createElement('div');
     panel.id = 'data-panel';
@@ -526,25 +526,25 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
       z-index: 1;
       box-shadow: none;
       pointer-events: auto;
-      max-height: none;         /* 不触发滚动条 */
-      overflow: hidden;         /* 兜底：即使超出也不出现滚动条 */
+      max-height: none;         /* не вызывает полосу прокрутки */
+      overflow: hidden;         /* на всякий случай: даже при переполнении полоса прокрутки не появится */
     `;
     panel.innerHTML = `
       <div style="margin-bottom:12px;font-weight:bold;color:#61dafb;border-bottom:1px solid #2a3446;padding-bottom:6px;">
-        IMU 实时数据
+        Данные IMU в реальном времени
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
-        <div><div style="color:#9fb0c3;font-size:10px;">翻滚角 (Roll)</div>
+        <div><div style="color:#9fb0c3;font-size:10px;">Крен (Roll)</div>
              <div id="panel-roll"  style="color:#ff6b6b;font-size:16px;font-weight:bold;">0.0°</div></div>
-        <div><div style="color:#9fb0c3;font-size:10px;">俯仰角 (Pitch)</div>
+        <div><div style="color:#9fb0c3;font-size:10px;">Тангаж (Pitch)</div>
              <div id="panel-pitch" style="color:#4ecdc4;font-size:16px;font-weight:bold;">0.0°</div></div>
       </div>
       <div style="margin-bottom:12px;">
-        <div style="color:#9fb0c3;font-size:10px;">偏航角 (Yaw)</div>
+        <div style="color:#9fb0c3;font-size:10px;">Рыскание (Yaw)</div>
         <div id="panel-yaw" style="color:#45b7d1;font-size:16px;font-weight:bold;">0.0°</div>
       </div>
       <div style="border-top:1px solid #2a3446;padding-top:8px;margin-top:8px;">
-        <div style="color:#9fb0c3;font-size:10px;margin-bottom:6px;">角速度 (°/s)</div>
+        <div style="color:#9fb0c3;font-size:10px;margin-bottom:6px;">Угловая скорость (°/s)</div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px;">
           <div><div style="color:#ff9999;font-size:9px;">gX</div><div id="panel-gx" style="color:#ff9999;font-size:11px;">0.0</div></div>
           <div><div style="color:#99ff99;font-size:9px;">gY</div><div id="panel-gy" style="color:#99ff99;font-size:11px;">0.0</div></div>
@@ -552,7 +552,7 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
         </div>
       </div>
       <div style="border-top:1px solid #2a3446;padding-top:8px;">
-        <div style="color:#9fb0c3;font-size:10px;margin-bottom:6px;">加速度 (m/s²)</div>
+        <div style="color:#9fb0c3;font-size:10px;margin-bottom:6px;">Ускорение (m/s²)</div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
           <div><div style="color:#ff9999;font-size:9px;">aX</div><div id="panel-ax" style="color:#ff9999;font-size:11px;">0.00</div></div>
           <div><div style="color:#99ff99;font-size:9px;">aY</div><div id="panel-ay" style="color:#99ff99;font-size:11px;">0.00</div></div>
@@ -577,7 +577,7 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
     document.getElementById('panel-az').textContent    = az.toFixed(2);
   }
 
-  // ========== 灯光 ==========
+  // ========== Освещение ==========
   const ambientLight = new THREE.AmbientLight(0x404080, 0.3);
   scene.add(ambientLight);
 
@@ -623,7 +623,7 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
     rimLight.color.setHSL(0.5 + hue, 1.0, 0.7);
   }
 
-  // ========== 模型 ==========
+  // ========== Модель ==========
   let glassModel = null;
   const loader = new GLTFLoader();
   loader.load(
@@ -649,7 +649,7 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
     },
     undefined,
     (error) => {
-      console.error('GLB加载失败:', error);
+      console.error('Ошибка загрузки GLB:', error);
       const fallbackCube = new THREE.Mesh(
         new THREE.BoxGeometry(2,2,2),
         new THREE.MeshStandardMaterial({ color: 0x00aaff, metalness: 0.7, roughness: 0.3, envMapIntensity: 1.0 })
@@ -660,15 +660,15 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
     }
   );
 
-  // 渲染循环
+  // Цикл рендеринга
   (function animate(){
     requestAnimationFrame(animate);
     updateLighting();
     renderer.render(scene, camera);
   })();
 
-  // ===== IMU 数学与数据通道（原逻辑保持） =====
-  // 安装补偿
+  // ===== Математика IMU и канал данных (исходная логика сохранена) =====
+  // Компенсация монтажа
   const MOUNT_RX = 0, MOUNT_RY = -90, MOUNT_RZ = 0;
   const qMount = new THREE.Quaternion()
     .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), THREE.MathUtils.degToRad(MOUNT_RY)))
@@ -834,12 +834,12 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
       updateSlider('gx', wx); updateSlider('gy', wy); updateSlider('gz', wz);
       updateSlider('ax', ax); updateSlider('ay', ay); updateSlider('az', az);
       
-      // 更新右侧数据
+      // Обновляем данные справа
       updateDataPanel(R, P, Y, wx, wy, wz, ax, ay, az);
     } catch(e){}
   };
 
-  // 初次与窗口改变时，保持左右上下对齐
+  // При первом запуске и изменении окна сохраняем вертикальное выравнивание левой и правой частей
   window.addEventListener('resize', resize);
   resize();
 })();

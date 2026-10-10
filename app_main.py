@@ -5,12 +5,12 @@ from typing import Any, Dict, Optional, Tuple, List, Callable, Set, Deque
 from collections import deque
 from dataclasses import dataclass
 import re
-# 在其它 import 之后加：
+# Добавить после остальных import:
 from qwen_extractor import extract_english_label
 from navigation_master import NavigationMaster, OrchestratorResult 
-# 新增：导入盲道导航器
+# Новое: импорт навигатора по тактильной дорожке
 from workflow_blindpath import BlindPathNavigator
-# 新增：导入过马路导航器
+# Новое: импорт навигатора перехода через дорогу
 from workflow_crossstreet import CrossStreetNavigator
 import torch
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
@@ -23,14 +23,14 @@ import numpy as np
 from ultralytics import YOLO
 from obstacle_detector_client import ObstacleDetectorClient
 
-import torch  # 添加这行
+import torch  # добавить эту строку
 
 
 import mediapipe as mp
 import bridge_io
 import threading
-import yolomedia  # 确保和 app_main.py 同目录，文件名就是 yolomedia.py
-# ---- Windows 事件循环策略 ----
+import yolomedia  # должен лежать в одном каталоге с app_main.py, имя файла — yolomedia.py
+# ---- Политика цикла событий для Windows ----
 if sys.platform.startswith("win"):
     try:
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -44,12 +44,12 @@ try:
 except Exception:
     pass
 
-# ---- DashScope ASR 基础 ----
-from dashscope import audio as dash_audio  # 若未安装，会在原项目里抛错提示
+# ---- Основа DashScope ASR ----
+from dashscope import audio as dash_audio  # если не установлен, исходный проект выбросит ошибку с подсказкой
 
 API_KEY = os.getenv("DASHSCOPE_API_KEY", "sk-a9440db694924559ae4ebdc2023d2b9a")
 if not API_KEY:
-    raise RuntimeError("未设置 DASHSCOPE_API_KEY")
+    raise RuntimeError("Не задан DASHSCOPE_API_KEY")
 
 MODEL        = "paraformer-realtime-v2"
 SAMPLE_RATE  = 16000
@@ -58,11 +58,11 @@ CHUNK_MS     = 20
 BYTES_CHUNK  = SAMPLE_RATE * CHUNK_MS // 1000 * 2
 SILENCE_20MS = bytes(BYTES_CHUNK)
 
-# ---- 引入我们的模块 ----
+# ---- Подключаем наши модули ----
 from audio_stream import (
-    register_stream_route,         # 挂 /stream.wav
-    broadcast_pcm16_realtime,      # 实时向连接分发 16k PCM
-    hard_reset_audio,              # 音频+AI 播放总闸
+    register_stream_route,         # монтирует /stream.wav
+    broadcast_pcm16_realtime,      # рассылка 16k PCM по подключениям в реальном времени
+    hard_reset_audio,              # общий рубильник воспроизведения аудио + AI
     BYTES_PER_20MS_16K,
     is_playing_now,
     current_ai_task,
@@ -75,7 +75,7 @@ from asr_core import (
 )
 from audio_player import initialize_audio_system, play_voice_text
 
-# ---- 同步录制器 ----
+# ---- Синхронный рекордер ----
 import sync_recorder
 import signal
 import atexit
@@ -86,7 +86,7 @@ UDP_PORT = 12345
 
 app = FastAPI()
 
-# ====== 状态与容器 ======
+# ====== Состояние и контейнеры ======
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 ui_clients: Dict[int, WebSocket] = {}
@@ -100,42 +100,42 @@ esp32_camera_ws: Optional[WebSocket] = None
 imu_ws_clients: Set[WebSocket] = set()
 esp32_audio_ws: Optional[WebSocket] = None
 
-# 【新增】盲道导航相关全局变量
+# [Новое] глобальные переменные навигации по тактильной дорожке
 blind_path_navigator = None
 navigation_active = False
 yolo_seg_model = None
 obstacle_detector = None
 
-# 【新增】过马路导航相关全局变量
+# [Новое] глобальные переменные навигации перехода через дорогу
 cross_street_navigator = None
 cross_street_active = False
-orchestrator = None  # 新增
+orchestrator = None  # новое
 
-# 【新增】omni对话状态标志
-omni_conversation_active = False  # 标记omni对话是否正在进行
-omni_previous_nav_state = None  # 保存omni激活前的导航状态，用于恢复
+# [Новое] флаг состояния omni-диалога
+omni_conversation_active = False  # отмечает, идёт ли сейчас omni-диалог
+omni_previous_nav_state = None  # сохраняет состояние навигации до активации omni для последующего восстановления
 
-# 【新增】模型加载函数
+# [Новое] функция загрузки моделей
 def load_navigation_models():
-    """加载盲道导航所需的模型"""
+    """Загружает модели, необходимые для навигации по тактильной дорожке"""
     global yolo_seg_model, obstacle_detector
 
     try:
         seg_model_path = os.getenv("BLIND_PATH_MODEL", r"C:\Users\Administrator\Desktop\rebuild1002\model\yolo-seg.pt")
-        #print(f"[NAVIGATION] 尝试加载模型: {seg_model_path}")
+        #print(f"[NAVIGATION] Пытаемся загрузить модель: {seg_model_path}")
 
         if os.path.exists(seg_model_path):
-            print(f"[NAVIGATION] 模型文件存在，开始加载...")
+            print(f"[NAVIGATION] Файл модели найден, начинаем загрузку...")
             yolo_seg_model = YOLO(seg_model_path)
 
-            # 强制放到 GPU
+            # принудительно переносим на GPU
             if torch.cuda.is_available():
                 yolo_seg_model.to("cuda")
-                print(f"[NAVIGATION] 盲道分割模型加载成功并放到GPU: {yolo_seg_model.device}")
+                print(f"[NAVIGATION] Модель сегментации тактильной дорожки загружена и перенесена на GPU: {yolo_seg_model.device}")
             else:
-                print("[NAVIGATION] CUDA不可用，模型仍在CPU")
+                print("[NAVIGATION] CUDA недоступна, модель остаётся на CPU")
 
-            # 测试模型是否能正常运行
+            # проверяем, что модель нормально работает
             try:
                 test_img = np.zeros((640, 640, 3), dtype=np.uint8)
                 results = yolo_seg_model.predict(
@@ -143,150 +143,150 @@ def load_navigation_models():
                     device="cuda" if torch.cuda.is_available() else "cpu",
                     verbose=False
                 )
-                print(f"[NAVIGATION] 模型测试成功，支持的类别数: {len(yolo_seg_model.names) if hasattr(yolo_seg_model, 'names') else '未知'}")
+                print(f"[NAVIGATION] Тест модели пройден, число поддерживаемых классов: {len(yolo_seg_model.names) if hasattr(yolo_seg_model, 'names') else 'неизвестно'}")
                 if hasattr(yolo_seg_model, 'names'):
-                    print(f"[NAVIGATION] 模型类别: {yolo_seg_model.names}")
+                    print(f"[NAVIGATION] Классы модели: {yolo_seg_model.names}")
             except Exception as e:
-                print(f"[NAVIGATION] 模型测试失败: {e}")
+                print(f"[NAVIGATION] Тест модели не пройден: {e}")
         else:
-            print(f"[NAVIGATION] 错误：找不到模型文件: {seg_model_path}")
-            print(f"[NAVIGATION] 当前工作目录: {os.getcwd()}")
-            print(f"[NAVIGATION] 请检查文件路径是否正确")
+            print(f"[NAVIGATION] Ошибка: файл модели не найден: {seg_model_path}")
+            print(f"[NAVIGATION] Текущий рабочий каталог: {os.getcwd()}")
+            print(f"[NAVIGATION] Проверьте правильность пути к файлу")
             
-        # 【修改开始】使用 ObstacleDetectorClient 替代直接的 YOLO
+        # [Начало изменений] используем ObstacleDetectorClient вместо прямого YOLO
         obstacle_model_path = os.getenv("OBSTACLE_MODEL", r"C:\Users\Administrator\Desktop\rebuild1002\model\yoloe-11l-seg.pt")
-        print(f"[NAVIGATION] 尝试加载障碍物检测模型: {obstacle_model_path}")
+        print(f"[NAVIGATION] Пытаемся загрузить модель детекции препятствий: {obstacle_model_path}")
         
         if os.path.exists(obstacle_model_path):
-            print(f"[NAVIGATION] 障碍物检测模型文件存在，开始加载...")
+            print(f"[NAVIGATION] Файл модели детекции препятствий найден, начинаем загрузку...")
             try:
-                # 使用 ObstacleDetectorClient 封装的 YOLO-E
+                # используем YOLO-E, обёрнутый в ObstacleDetectorClient
                 obstacle_detector = ObstacleDetectorClient(model_path=obstacle_model_path)
-                print(f"[NAVIGATION] ========== YOLO-E 障碍物检测器加载成功 ==========")
+                print(f"[NAVIGATION] ========== Детектор препятствий YOLO-E успешно загружен ==========")
                 
-                # 检查模型是否成功加载
+                # проверяем, успешно ли загружена модель
                 if hasattr(obstacle_detector, 'model') and obstacle_detector.model is not None:
-                    print(f"[NAVIGATION] YOLO-E 模型已初始化")
-                    print(f"[NAVIGATION] 模型设备: {next(obstacle_detector.model.parameters()).device}")
+                    print(f"[NAVIGATION] Модель YOLO-E инициализирована")
+                    print(f"[NAVIGATION] Устройство модели: {next(obstacle_detector.model.parameters()).device}")
                 else:
-                    print(f"[NAVIGATION] 警告：YOLO-E 模型初始化异常")
+                    print(f"[NAVIGATION] Предупреждение: ошибка инициализации модели YOLO-E")
                 
-                # 检查白名单是否成功加载
+                # проверяем, успешно ли загружен белый список
                 if hasattr(obstacle_detector, 'WHITELIST_CLASSES'):
-                    print(f"[NAVIGATION] 白名单类别数: {len(obstacle_detector.WHITELIST_CLASSES)}")
-                    print(f"[NAVIGATION] 白名单前10个类别: {', '.join(obstacle_detector.WHITELIST_CLASSES[:10])}")
+                    print(f"[NAVIGATION] Число классов в белом списке: {len(obstacle_detector.WHITELIST_CLASSES)}")
+                    print(f"[NAVIGATION] Первые 10 классов белого списка: {', '.join(obstacle_detector.WHITELIST_CLASSES[:10])}")
                 else:
-                    print(f"[NAVIGATION] 警告：白名单类别未定义")
+                    print(f"[NAVIGATION] Предупреждение: классы белого списка не определены")
                 
-                # 检查文本特征是否成功预计算
+                # проверяем, успешно ли предвычислены текстовые признаки
                 if hasattr(obstacle_detector, 'whitelist_embeddings') and obstacle_detector.whitelist_embeddings is not None:
-                    print(f"[NAVIGATION] YOLO-E 文本特征已预计算")
-                    print(f"[NAVIGATION] 文本特征张量形状: {obstacle_detector.whitelist_embeddings.shape if hasattr(obstacle_detector.whitelist_embeddings, 'shape') else '未知'}")
+                    print(f"[NAVIGATION] Текстовые признаки YOLO-E предвычислены")
+                    print(f"[NAVIGATION] Форма тензора текстовых признаков: {obstacle_detector.whitelist_embeddings.shape if hasattr(obstacle_detector.whitelist_embeddings, 'shape') else 'неизвестно'}")
                 else:
-                    print(f"[NAVIGATION] 警告：YOLO-E 文本特征未预计算")
+                    print(f"[NAVIGATION] Предупреждение: текстовые признаки YOLO-E не предвычислены")
                 
-                # 测试障碍物检测功能
-                print(f"[NAVIGATION] 开始测试 YOLO-E 检测功能...")
+                # тестируем детекцию препятствий
+                print(f"[NAVIGATION] Начинаем тест детекции YOLO-E...")
                 try:
                     test_img = np.zeros((640, 640, 3), dtype=np.uint8)
-                    # 在测试图像中画一个白色矩形，模拟一个物体
+                    # рисуем на тестовом изображении белый прямоугольник, имитирующий объект
                     cv2.rectangle(test_img, (200, 200), (400, 400), (255, 255, 255), -1)
                     
-                    # 测试检测（不提供 path_mask）
+                    # тестовая детекция (без path_mask)
                     test_results = obstacle_detector.detect(test_img)
-                    print(f"[NAVIGATION] YOLO-E 检测测试成功!")
-                    print(f"[NAVIGATION] 测试检测结果数: {len(test_results)}")
+                    print(f"[NAVIGATION] Тест детекции YOLO-E пройден!")
+                    print(f"[NAVIGATION] Число результатов тестовой детекции: {len(test_results)}")
                     
                     if len(test_results) > 0:
-                        print(f"[NAVIGATION] 测试检测到的物体:")
+                        print(f"[NAVIGATION] Объекты, найденные в тесте:")
                         for i, obj in enumerate(test_results):
-                            print(f"  - 物体 {i+1}: {obj.get('name', 'unknown')}, "
-                                  f"面积比例: {obj.get('area_ratio', 0):.3f}, "
-                                  f"位置: ({obj.get('center_x', 0):.0f}, {obj.get('center_y', 0):.0f})")
+                            print(f"  - Объект {i+1}: {obj.get('name', 'unknown')}, "
+                                  f"доля площади: {obj.get('area_ratio', 0):.3f}, "
+                                  f"позиция: ({obj.get('center_x', 0):.0f}, {obj.get('center_y', 0):.0f})")
                 except Exception as e:
-                    print(f"[NAVIGATION] YOLO-E 检测测试失败: {e}")
+                    print(f"[NAVIGATION] Тест детекции YOLO-E не пройден: {e}")
                     import traceback
                     traceback.print_exc()
                 
-                print(f"[NAVIGATION] ========== YOLO-E 障碍物检测器加载完成 ==========")
+                print(f"[NAVIGATION] ========== Загрузка детектора препятствий YOLO-E завершена ==========")
                 
             except Exception as e:
-                print(f"[NAVIGATION] 障碍物检测器加载失败: {e}")
+                print(f"[NAVIGATION] Не удалось загрузить детектор препятствий: {e}")
                 import traceback
                 traceback.print_exc()
                 obstacle_detector = None
         else:
-            print(f"[NAVIGATION] 警告：找不到障碍物检测模型文件: {obstacle_model_path}")
+            print(f"[NAVIGATION] Предупреждение: файл модели детекции препятствий не найден: {obstacle_model_path}")
         
     except Exception as e:
-        print(f"[NAVIGATION] 模型加载失败: {e}")
+        print(f"[NAVIGATION] Ошибка загрузки моделей: {e}")
         import traceback
         traceback.print_exc()
 
-# 在程序启动时加载模型
-print("[NAVIGATION] 开始加载导航模型...")
+# Загружаем модели при запуске программы
+print("[NAVIGATION] Начинаем загрузку моделей навигации...")
 load_navigation_models()
-print(f"[NAVIGATION] 模型加载完成 - yolo_seg_model: {yolo_seg_model is not None}")
+print(f"[NAVIGATION] Загрузка моделей завершена - yolo_seg_model: {yolo_seg_model is not None}")
 
-# 【新增】启动同步录制
-print("[RECORDER] 启动同步录制系统...")
+# [Новое] запуск синхронной записи
+print("[RECORDER] Запуск системы синхронной записи...")
 sync_recorder.start_recording()
-print("[RECORDER] 录制系统已启动，将自动保存视频和音频")
+print("[RECORDER] Система записи запущена, видео и аудио будут сохраняться автоматически")
 
-# 【新增】注册退出处理器，确保Ctrl+C时保存录制文件
+# [Новое] регистрируем обработчик выхода, чтобы при Ctrl+C файлы записи сохранялись
 def cleanup_on_exit():
-    """程序退出时的清理工作"""
-    print("\n[SYSTEM] 正在关闭录制器...")
+    """Очистка при завершении программы"""
+    print("\n[SYSTEM] Закрываем рекордер...")
     try:
         sync_recorder.stop_recording()
-        print("[SYSTEM] 录制文件已保存")
+        print("[SYSTEM] Файлы записи сохранены")
     except Exception as e:
-        print(f"[SYSTEM] 关闭录制器时出错: {e}")
+        print(f"[SYSTEM] Ошибка при закрытии рекордера: {e}")
 
 def signal_handler(sig, frame):
-    """处理Ctrl+C信号"""
-    print("\n[SYSTEM] 收到中断信号，正在安全退出...")
+    """Обработка сигнала Ctrl+C"""
+    print("\n[SYSTEM] Получен сигнал прерывания, выполняем безопасный выход...")
     cleanup_on_exit()
     import sys
     sys.exit(0)
 
-# 注册信号处理器
+# Регистрируем обработчики сигналов
 signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
-signal.signal(signal.SIGTERM, signal_handler)  # 终止信号
-atexit.register(cleanup_on_exit)  # 正常退出时也调用
+signal.signal(signal.SIGTERM, signal_handler)  # сигнал завершения
+atexit.register(cleanup_on_exit)  # вызывается и при обычном выходе
 
-print("[RECORDER] 已注册退出处理器 - Ctrl+C时会自动保存录制文件")
+print("[RECORDER] Обработчик выхода зарегистрирован - при Ctrl+C файлы записи сохранятся автоматически")
 
 
 
-# 【新增】预加载红绿灯检测模型（避免进入WAIT_TRAFFIC_LIGHT状态时卡顿）
+# [Новое] предзагрузка модели детекции светофора (чтобы не было подвисания при входе в состояние WAIT_TRAFFIC_LIGHT)
 try:
     import trafficlight_detection
-    print("[TRAFFIC_LIGHT] 开始预加载红绿灯检测模型...")
+    print("[TRAFFIC_LIGHT] Начинаем предзагрузку модели детекции светофора...")
     if trafficlight_detection.init_model():
-        print("[TRAFFIC_LIGHT] 红绿灯检测模型预加载成功")
-        # 执行一次测试推理，完全预热模型
+        print("[TRAFFIC_LIGHT] Модель детекции светофора успешно предзагружена")
+        # выполняем один тестовый инференс, чтобы полностью прогреть модель
         try:
             test_img = np.zeros((640, 640, 3), dtype=np.uint8)
             _ = trafficlight_detection.process_single_frame(test_img)
-            print("[TRAFFIC_LIGHT] 模型预热完成")
+            print("[TRAFFIC_LIGHT] Прогрев модели завершён")
         except Exception as e:
-            print(f"[TRAFFIC_LIGHT] 模型预热失败: {e}")
+            print(f"[TRAFFIC_LIGHT] Ошибка прогрева модели: {e}")
     else:
-        print("[TRAFFIC_LIGHT] 红绿灯检测模型预加载失败")
+        print("[TRAFFIC_LIGHT] Не удалось предзагрузить модель детекции светофора")
 except Exception as e:
-    print(f"[TRAFFIC_LIGHT] 红绿灯模型预加载出错: {e}")
+    print(f"[TRAFFIC_LIGHT] Ошибка предзагрузки модели светофора: {e}")
 
-# ============== 关键：系统级"硬重置"总闸 =================
+# ============== Ключевое: общесистемный рубильник «жёсткого сброса» =================
 interrupt_lock = asyncio.Lock()
 
-# ============== YOLO媒体线程管理 =================
+# ============== Управление медиапотоком YOLO =================
 yolomedia_thread: Optional[threading.Thread] = None
 yolomedia_stop_event = threading.Event()
 yolomedia_running = False
-yolomedia_sending_frames = False  # 新增：标记YOLO是否已经开始发送处理后的帧
+yolomedia_sending_frames = False  # новое: отмечает, начал ли YOLO отправлять обработанные кадры
 
-# 物品名称到YOLO类别的映射
+# Сопоставление названий предметов классам YOLO
 ITEM_TO_CLASS_MAP = {
     "红牛": "Red_Bull",
     "AD钙奶": "AD_milk",
@@ -321,14 +321,14 @@ async def ui_broadcast_final(text: str):
 
 async def full_system_reset(reason: str = ""):
     """
-    回到刚启动后的状态：
-    1) 停播 + 取消AI任务 + 切断所有/stream.wav（hard_reset_audio）
-    2) 停止 ASR 实时识别流（关键）
-    3) 清 UI 状态
-    4) 清最近相机帧（避免把旧帧又拼进下一轮）
-    5) 告知 ESP32：RESET（可选）
+    Возврат в состояние сразу после запуска:
+    1) остановка воспроизведения + отмена задачи AI + обрыв всех /stream.wav (hard_reset_audio)
+    2) остановка потока распознавания ASR в реальном времени (ключевое)
+    3) очистка состояния UI
+    4) очистка последнего кадра камеры (чтобы старый кадр не попал в следующий раунд)
+    5) уведомление ESP32: RESET (опционально)
     """
-    # 1) 音频&AI
+    # 1) Аудио и AI
     await hard_reset_audio(reason or "full_system_reset")
 
     # 2) ASR
@@ -339,13 +339,13 @@ async def full_system_reset(reason: str = ""):
     current_partial = ""
     recent_finals = []
 
-    # 4) 相机帧
+    # 4) Кадр камеры
     try:
         last_frames.clear()
     except Exception:
         pass
 
-    # 5) 通知 ESP32
+    # 5) Уведомляем ESP32
     try:
         if esp32_audio_ws and (esp32_audio_ws.client_state == WebSocketState.CONNECTED):
             await esp32_audio_ws.send_text("RESET")
@@ -354,27 +354,27 @@ async def full_system_reset(reason: str = ""):
 
     print("[SYSTEM] full reset done.", flush=True)
 
-# ========= 启动/停止 YOLO 媒体处理 =========
+# ========= Запуск/остановка медиаобработки YOLO =========
 def start_yolomedia_with_target(target_name: str):
-    """启动yolomedia线程，搜索指定物品"""
+    """Запускает поток yolomedia для поиска указанного предмета"""
     global yolomedia_thread, yolomedia_stop_event, yolomedia_running, yolomedia_sending_frames
     
-    # 如果已经在运行，先停止
+    # если уже запущен, сначала останавливаем
     if yolomedia_running:
         stop_yolomedia()
     
-    # 查找对应的YOLO类别
+    # ищем соответствующий класс YOLO
     yolo_class = ITEM_TO_CLASS_MAP.get(target_name, target_name)
     print(f"[YOLOMEDIA] Starting with target: {target_name} -> YOLO class: {yolo_class}", flush=True)
-    print(f"[YOLOMEDIA] Available mappings: {ITEM_TO_CLASS_MAP}", flush=True)  # 添加这行调试
+    print(f"[YOLOMEDIA] Available mappings: {ITEM_TO_CLASS_MAP}", flush=True)  # добавлена эта строка для отладки
     
     yolomedia_stop_event.clear()
     yolomedia_running = True
-    yolomedia_sending_frames = False  # 重置发送帧状态
+    yolomedia_sending_frames = False  # сбрасываем состояние отправки кадров
     
     def _run():
         try:
-            # 传递目标类别名和停止事件
+            # передаём имя целевого класса и событие остановки
             yolomedia.main(headless=True, prompt_name=yolo_class, stop_event=yolomedia_stop_event)
         except Exception as e:
             print(f"[YOLOMEDIA] worker stopped: {e}", flush=True)
@@ -385,236 +385,236 @@ def start_yolomedia_with_target(target_name: str):
     
     yolomedia_thread = threading.Thread(target=_run, daemon=True)
     yolomedia_thread.start()
-    print(f"[YOLOMEDIA] background worker started for: {yolo_class}（正在初始化，暂时显示原始画面）", flush=True)
+    print(f"[YOLOMEDIA] background worker started for: {yolo_class} (идёт инициализация, пока показываем исходное изображение)", flush=True)
 
 def stop_yolomedia():
-    """停止yolomedia线程"""
+    """Останавливает поток yolomedia"""
     global yolomedia_thread, yolomedia_stop_event, yolomedia_running, yolomedia_sending_frames
     
     if yolomedia_running:
         print("[YOLOMEDIA] Stopping worker...", flush=True)
         yolomedia_stop_event.set()
         
-        # 等待线程结束（最多等5秒）
+        # ждём завершения потока (не более 5 секунд)
         if yolomedia_thread and yolomedia_thread.is_alive():
             yolomedia_thread.join(timeout=5.0)
         
         yolomedia_running = False
         yolomedia_sending_frames = False
         
-        # 【新增】如果orchestrator在找物品模式，结束时不自动恢复（由命令控制）
-        # 只清理标志位即可
-        print("[YOLOMEDIA] Worker stopped, 等待状态切换.", flush=True)
+        # [Новое] если orchestrator в режиме поиска предмета, при завершении автоматически не восстанавливаем (управляется командами)
+        # достаточно сбросить флаги
+        print("[YOLOMEDIA] Worker stopped, ожидаем переключения состояния.", flush=True)
 
-# ========= 自定义的 start_ai_with_text，支持识别特殊命令 =========
+# ========= Собственная версия start_ai_with_text с распознаванием специальных команд =========
 async def start_ai_with_text_custom(user_text: str):
-    """扩展版的AI启动函数，支持识别特殊命令"""
+    """Расширенная функция запуска AI с распознаванием специальных команд"""
     global navigation_active, blind_path_navigator, cross_street_active, cross_street_navigator, orchestrator
     
-    # 【修改】在导航模式和红绿灯检测模式下，只有特定词才进入omni对话
+    # [Изменено] в режимах навигации и детекции светофора omni-диалог запускается только по определённым словам
     if orchestrator:
         current_state = orchestrator.get_state()
-        # 如果在导航模式或红绿灯检测模式（非CHAT模式）
+        # если в режиме навигации или детекции светофора (не CHAT)
         if current_state not in ["CHAT", "IDLE"]:
-            # 检查是否是允许的对话触发词
+            # проверяем, является ли фраза разрешённым триггером диалога
             allowed_keywords = ["帮我看", "帮我看下", "帮我找", "找一下", "看看", "识别一下"]
             is_allowed_query = any(keyword in user_text for keyword in allowed_keywords)
             
-            # 检查是否是导航控制命令
+            # проверяем, является ли фраза командой управления навигацией
             nav_control_keywords = ["开始过马路", "过马路结束", "开始导航", "盲道导航", "停止导航", "结束导航", 
                                    "检测红绿灯", "看红绿灯", "停止检测", "停止红绿灯"]
             is_nav_control = any(keyword in user_text for keyword in nav_control_keywords)
             
-            # 如果既不是允许的查询，也不是导航控制命令，则丢弃
+            # если это ни разрешённый запрос, ни команда управления навигацией — отбрасываем
             if not is_allowed_query and not is_nav_control:
-                mode_name = "红绿灯检测" if current_state == "TRAFFIC_LIGHT_DETECTION" else "导航"
-                print(f"[{mode_name}模式] 丢弃非对话语音: {user_text}")
-                return  # 直接丢弃，不进入omni
+                mode_name = "детекция светофора" if current_state == "TRAFFIC_LIGHT_DETECTION" else "навигация"
+                print(f"[Режим: {mode_name}] Отброшена речь вне диалога: {user_text}")
+                return  # сразу отбрасываем, в omni не передаём
     
-    # 【修改】检查是否是过马路相关命令 - 使用orchestrator控制
+    # [Изменено] проверяем команды перехода через дорогу - управление через orchestrator
     if "开始过马路" in user_text or "帮我过马路" in user_text:
-        # 【新增】如果正在找物品，先停止
+        # [Новое] если идёт поиск предмета, сначала останавливаем
         if yolomedia_running:
             stop_yolomedia()
-            print("[ITEM_SEARCH] 从找物品模式切换到过马路")
+            print("[ITEM_SEARCH] Переключение из режима поиска предмета в режим перехода через дорогу")
         
         if orchestrator:
             orchestrator.start_crossing()
-            print(f"[CROSS_STREET] 过马路模式已启动，状态: {orchestrator.get_state()}")
-            # 播放启动语音并广播到UI
+            print(f"[CROSS_STREET] Режим перехода через дорогу запущен, состояние: {orchestrator.get_state()}")
+            # воспроизводим голосовое сообщение о запуске и рассылаем в UI
             play_voice_text("过马路模式已启动。")
-            await ui_broadcast_final("[系统] 过马路模式已启动")
+            await ui_broadcast_final("[Система] Режим перехода через дорогу запущен")
         else:
-            print("[CROSS_STREET] 警告：导航统领器未初始化！")
+            print("[CROSS_STREET] Предупреждение: оркестратор навигации не инициализирован!")
             play_voice_text("启动过马路模式失败，请稍后重试。")
-            await ui_broadcast_final("[系统] 导航系统未就绪")
+            await ui_broadcast_final("[Система] Система навигации не готова")
         return
     
     if "过马路结束" in user_text or "结束过马路" in user_text:
         if orchestrator:
             orchestrator.stop_navigation()
-            print(f"[CROSS_STREET] 导航已停止，状态: {orchestrator.get_state()}")
-            # 播放停止语音并广播到UI
+            print(f"[CROSS_STREET] Навигация остановлена, состояние: {orchestrator.get_state()}")
+            # воспроизводим голосовое сообщение об остановке и рассылаем в UI
             play_voice_text("已停止导航。")
-            await ui_broadcast_final("[系统] 过马路模式已停止")
+            await ui_broadcast_final("[Система] Режим перехода через дорогу остановлен")
         else:
-            await ui_broadcast_final("[系统] 导航系统未运行")
+            await ui_broadcast_final("[Система] Система навигации не запущена")
         return
     
-    # 【修改】检查是否是红绿灯检测命令 - 实现与盲道导航互斥
+    # [Изменено] проверяем команды детекции светофора - взаимоисключение с навигацией по тактильной дорожке
     if "检测红绿灯" in user_text or "看红绿灯" in user_text:
         try:
             import trafficlight_detection
             
-            # 切换orchestrator到红绿灯检测模式（暂停盲道导航）
+            # переключаем orchestrator в режим детекции светофора (навигация по тактильной дорожке приостанавливается)
             if orchestrator:
                 orchestrator.start_traffic_light_detection()
-                print(f"[TRAFFIC] 切换到红绿灯检测模式，状态: {orchestrator.get_state()}")
+                print(f"[TRAFFIC] Переключение в режим детекции светофора, состояние: {orchestrator.get_state()}")
             
-            # 【改进】使用主线程模式而不是独立线程，避免掉帧
-            success = trafficlight_detection.init_model()  # 只初始化模型，不启动线程
-            trafficlight_detection.reset_detection_state()  # 重置状态
+            # [Улучшено] работаем в основном потоке, а не в отдельном, чтобы избежать пропуска кадров
+            success = trafficlight_detection.init_model()  # только инициализируем модель, поток не запускаем
+            trafficlight_detection.reset_detection_state()  # сбрасываем состояние
             
             if success:
-                await ui_broadcast_final("[系统] 红绿灯检测已启动")
+                await ui_broadcast_final("[Система] Детекция светофора запущена")
             else:
-                await ui_broadcast_final("[系统] 红绿灯模型加载失败")
+                await ui_broadcast_final("[Система] Не удалось загрузить модель светофора")
         except Exception as e:
-            print(f"[TRAFFIC] 启动红绿灯检测失败: {e}")
-            await ui_broadcast_final(f"[系统] 启动失败: {e}")
+            print(f"[TRAFFIC] Не удалось запустить детекцию светофора: {e}")
+            await ui_broadcast_final(f"[Система] Ошибка запуска: {e}")
         return
     
     if "停止检测" in user_text or "停止红绿灯" in user_text:
         try:
-            # 恢复到对话模式
+            # возвращаемся в режим диалога
             if orchestrator:
-                orchestrator.stop_navigation()  # 回到CHAT模式
-                print(f"[TRAFFIC] 红绿灯检测停止，恢复到{orchestrator.get_state()}模式")
+                orchestrator.stop_navigation()  # возврат в режим CHAT
+                print(f"[TRAFFIC] Детекция светофора остановлена, восстановлен режим {orchestrator.get_state()}")
             
-            await ui_broadcast_final("[系统] 红绿灯检测已停止")
+            await ui_broadcast_final("[Система] Детекция светофора остановлена")
         except Exception as e:
-            print(f"[TRAFFIC] 停止红绿灯检测失败: {e}")
-            await ui_broadcast_final(f"[系统] 停止失败: {e}")
+            print(f"[TRAFFIC] Не удалось остановить детекцию светофора: {e}")
+            await ui_broadcast_final(f"[Система] Ошибка остановки: {e}")
         return
     
-    # 【修改】检查是否是导航相关命令 - 使用orchestrator控制
+    # [Изменено] проверяем команды навигации - управление через orchestrator
     if "开始导航" in user_text or "盲道导航" in user_text or "帮我导航" in user_text:
-        # 【新增】如果正在找物品，先停止
+        # [Новое] если идёт поиск предмета, сначала останавливаем
         if yolomedia_running:
             stop_yolomedia()
-            print("[ITEM_SEARCH] 从找物品模式切换到盲道导航")
+            print("[ITEM_SEARCH] Переключение из режима поиска предмета в навигацию по тактильной дорожке")
         
         if orchestrator:
             orchestrator.start_blind_path_navigation()
-            print(f"[NAVIGATION] 盲道导航已启动，状态: {orchestrator.get_state()}")
-            await ui_broadcast_final("[系统] 盲道导航已启动")
+            print(f"[NAVIGATION] Навигация по тактильной дорожке запущена, состояние: {orchestrator.get_state()}")
+            await ui_broadcast_final("[Система] Навигация по тактильной дорожке запущена")
         else:
-            print("[NAVIGATION] 警告：导航统领器未初始化！")
-            await ui_broadcast_final("[系统] 导航系统未就绪")
+            print("[NAVIGATION] Предупреждение: оркестратор навигации не инициализирован!")
+            await ui_broadcast_final("[Система] Система навигации не готова")
         return
     
     if "停止导航" in user_text or "结束导航" in user_text:
         if orchestrator:
             orchestrator.stop_navigation()
-            print(f"[NAVIGATION] 导航已停止，状态: {orchestrator.get_state()}")
-            await ui_broadcast_final("[系统] 盲道导航已停止")
+            print(f"[NAVIGATION] Навигация остановлена, состояние: {orchestrator.get_state()}")
+            await ui_broadcast_final("[Система] Навигация по тактильной дорожке остановлена")
         else:
-            await ui_broadcast_final("[系统] 导航系统未运行")
+            await ui_broadcast_final("[Система] Система навигации не запущена")
         return
 
     nav_cmd_keywords = ["开始过马路", "过马路结束", "开始导航", "盲道导航", "停止导航", "结束导航", "立即通过", "现在通过", "继续"]
     if any(k in user_text for k in nav_cmd_keywords):
         if orchestrator:
             orchestrator.on_voice_command(user_text)
-            await ui_broadcast_final("[系统] 导航模式已更新")
+            await ui_broadcast_final("[Система] Режим навигации обновлён")
         else:
-            await ui_broadcast_final("[系统] 导航统领器未初始化")
+            await ui_broadcast_final("[Система] Оркестратор навигации не инициализирован")
         return    
 
-    # 检查是否是"帮我找/识别一下xxx"的命令
-    # 扩展正则表达式，支持更多关键词
+    # проверяем команду вида "帮我找/识别一下xxx" (найди/распознай xxx)
+    # расширенное регулярное выражение с поддержкой большего числа ключевых слов
     find_pattern = r"(?:^\s*帮我)?\s*找一下\s*(.+?)(?:。|！|？|$)"
     match = re.search(find_pattern, user_text)
         
     if match:
-        # 提取中文物品名称
+        # извлекаем китайское название предмета
         item_cn = match.group(1).strip()
         if item_cn:
-            # 【新增】用本地映射 + Qwen 提取英文类名
+            # [Новое] получаем английское имя класса через локальное сопоставление + Qwen
             label_en, src = extract_english_label(item_cn)
             print(f"[COMMAND] Finder request: '{item_cn}' -> '{label_en}' (src={src})", flush=True)
 
-            # 【新增】切换到找物品模式（暂停导航）
+            # [Новое] переключаемся в режим поиска предмета (навигация приостанавливается)
             if orchestrator:
                 orchestrator.start_item_search()
-                print(f"[ITEM_SEARCH] 已切换到找物品模式，状态: {orchestrator.get_state()}")
+                print(f"[ITEM_SEARCH] Переключено в режим поиска предмета, состояние: {orchestrator.get_state()}")
             
-            # 【关键】把英文类名传给 yolomedia（它会在找不到类时自动切 YOLOE）
+            # [Ключевое] передаём английское имя класса в yolomedia (если класс не найден, он автоматически переключится на YOLOE)
             start_yolomedia_with_target(label_en)
 
-            # 给前端/语音来个确认反馈
+            # даём подтверждение во фронтенд/голосом
             try:
-                await ui_broadcast_final(f"[找物品] 正在寻找 {item_cn}...")
+                await ui_broadcast_final(f"[Поиск предмета] Ищем {item_cn}...")
             except Exception:
                 pass
 
             return
     
-    # 检查是否是"找到了"的命令
+    # проверяем команду "找到了" (нашёл)
     if "找到了" in user_text or "拿到了" in user_text:
         print("[COMMAND] Found command detected", flush=True)
-        # 停止yolomedia
+        # останавливаем yolomedia
         stop_yolomedia()
         
-        # 【新增】停止找物品模式，恢复之前的导航状态
+        # [Новое] выходим из режима поиска предмета и восстанавливаем прежнее состояние навигации
         if orchestrator:
             orchestrator.stop_item_search(restore_nav=True)
             current_state = orchestrator.get_state()
-            print(f"[ITEM_SEARCH] 找物品结束，当前状态: {current_state}")
+            print(f"[ITEM_SEARCH] Поиск предмета завершён, текущее состояние: {current_state}")
             
-            # 根据恢复的状态给出反馈
+            # даём обратную связь в зависимости от восстановленного состояния
             if current_state in ["BLINDPATH_NAV", "SEEKING_CROSSWALK", "WAIT_TRAFFIC_LIGHT", "CROSSING", "SEEKING_NEXT_BLINDPATH"]:
-                await ui_broadcast_final("[找物品] 已找到物品，继续导航。")
+                await ui_broadcast_final("[Поиск предмета] Предмет найден, продолжаем навигацию.")
             else:
-                await ui_broadcast_final("[找物品] 已找到物品。")
+                await ui_broadcast_final("[Поиск предмета] Предмет найден.")
         else:
-            await ui_broadcast_final("[找物品] 已找到物品。")
+            await ui_broadcast_final("[Поиск предмета] Предмет найден.")
         
         return
     
-    # 【修改】omni对话开始时，切换到CHAT模式
+    # [Изменено] при начале omni-диалога переключаемся в режим CHAT
     global omni_conversation_active, omni_previous_nav_state
     omni_conversation_active = True
     
-    # 保存当前导航状态并切换到CHAT模式
+    # сохраняем текущее состояние навигации и переключаемся в режим CHAT
     if orchestrator:
         current_state = orchestrator.get_state()
-        # 只有在导航模式下才需要保存和切换
+        # сохранять и переключать нужно только в режиме навигации
         if current_state not in ["CHAT", "IDLE"]:
             omni_previous_nav_state = current_state
             orchestrator.force_state("CHAT")
-            print(f"[OMNI] 对话开始，从{current_state}切换到CHAT模式")
+            print(f"[OMNI] Начало диалога, переключение из {current_state} в режим CHAT")
         else:
             omni_previous_nav_state = None
-            print(f"[OMNI] 对话开始（当前已在{current_state}模式）")
+            print(f"[OMNI] Начало диалога (уже в режиме {current_state})")
     
-    # 如果不是特殊命令，执行原有的AI对话逻辑
-    # 但如果yolomedia正在运行，暂时不处理普通对话
+    # если это не специальная команда, выполняем исходную логику AI-диалога
+    # но если работает yolomedia, обычный диалог пока не обрабатываем
     if yolomedia_running:
         print("[AI] YOLO media is running, skipping normal AI response", flush=True)
         return
     
-    # 原有的AI对话逻辑
+    # исходная логика AI-диалога
     await start_ai_with_text(user_text)
 
-# ========= Omni 播放启动 =========
+# ========= Запуск воспроизведения Omni =========
 async def start_ai_with_text(user_text: str):
-    """硬重置后，开启新的 AI 语音输出。"""
+    """После жёсткого сброса запускает новый голосовой вывод AI."""
     async def _runner():
         txt_buf: List[str] = []
         rate_state = None
 
-        # 组装（图像+文本）
+        # собираем (изображение + текст)
         content_list = []
         if last_frames:
             try:
@@ -630,7 +630,7 @@ async def start_ai_with_text(user_text: str):
 
         try:
             async for piece in stream_chat(content_list, voice="Cherry", audio_format="wav"):
-                # 文本增量（仅 UI）
+                # инкремент текста (только UI)
                 if piece.text_delta:
                     txt_buf.append(piece.text_delta)
                     try:
@@ -638,65 +638,65 @@ async def start_ai_with_text(user_text: str):
                     except Exception:
                         pass
 
-                # 音频分片：Omni 返回 24k (PCM16) 的 wav audio.data（Base64）；下行需要 8k PCM16
+                # фрагмент аудио: Omni возвращает wav audio.data 24k (PCM16) в Base64; для нисходящего потока нужен 8k PCM16
                 if piece.audio_b64:
                     try:
                         pcm24 = base64.b64decode(piece.audio_b64)
                     except Exception:
                         pcm24 = b""
                     if pcm24:
-                        # 24k → 8k (使用ratecv保证音调和速度不变)
+                        # 24k → 8k (ratecv сохраняет высоту тона и скорость)
                         pcm8k, rate_state = audioop.ratecv(pcm24, 2, 1, 24000, 8000, rate_state)
                         pcm8k = audioop.mul(pcm8k, 2, 0.60)
                         if pcm8k:
                             await broadcast_pcm16_realtime(pcm8k)
 
         except asyncio.CancelledError:
-            # 被新一轮打断
+            # прервано новым раундом
             raise
         except Exception as e:
             try:
-                await ui_broadcast_final(f"[AI] 发生错误：{e}")
+                await ui_broadcast_final(f"[AI] Произошла ошибка: {e}")
             except Exception:
                 pass
         finally:
-            # 【修改】标记omni对话结束，恢复之前的导航模式
+            # [Изменено] отмечаем конец omni-диалога и восстанавливаем прежний режим навигации
             global omni_conversation_active, omni_previous_nav_state
             omni_conversation_active = False
             
-            # 恢复之前的导航状态
+            # восстанавливаем прежнее состояние навигации
             if orchestrator and omni_previous_nav_state:
                 orchestrator.force_state(omni_previous_nav_state)
-                print(f"[OMNI] 对话结束，恢复到{omni_previous_nav_state}模式")
+                print(f"[OMNI] Диалог завершён, восстановлен режим {omni_previous_nav_state}")
                 omni_previous_nav_state = None
             else:
-                print(f"[OMNI] 对话结束（无需恢复导航状态）")
+                print(f"[OMNI] Диалог завершён (восстанавливать состояние навигации не нужно)")
             
-            # 自然结束时，给当前连接一个 "完结" 信号
-            from audio_stream import stream_clients  # 局部导入，避免环依赖
+            # при естественном завершении отправляем текущим подключениям сигнал «конец»
+            from audio_stream import stream_clients  # локальный импорт, чтобы избежать циклической зависимости
             for sc in list(stream_clients):
                 if not sc.abort_event.is_set():
-                    try: sc.q.put_nowait(b"\x00"*BYTES_PER_20MS_16K)  # 一帧静音
+                    try: sc.q.put_nowait(b"\x00"*BYTES_PER_20MS_16K)  # один кадр тишины
                     except Exception: pass
                     try: sc.q.put_nowait(None)
                     except Exception: pass
 
-            final_text = ("".join(txt_buf)).strip() or "（空响应）"
+            final_text = ("".join(txt_buf)).strip() or "(пустой ответ)"
             try:
                 await ui_broadcast_final("[AI] " + final_text)
             except Exception:
                 pass
 
-    # 真正启动前先硬重置，保证**绝无**旧音频残留
+    # перед реальным запуском делаем жёсткий сброс, чтобы **гарантированно** не осталось старого аудио
     await hard_reset_audio("start_ai_with_text")
     loop = asyncio.get_running_loop()
-    from audio_stream import current_ai_task as _task_holder  # 读写模块内全局
+    from audio_stream import current_ai_task as _task_holder  # чтение/запись глобальной переменной модуля
     from audio_stream import __dict__ as _as_dict
-    # 设置模块内的 current_ai_task
+    # устанавливаем current_ai_task внутри модуля
     task = loop.create_task(_runner())
     _as_dict["current_ai_task"] = task
 
-# ---------- 页面 / 健康 ----------
+# ---------- Страница / health ----------
 @app.get("/", response_class=HTMLResponse)
 def root():
     with open(os.path.join("templates", "index.html"), "r", encoding="utf-8") as f:
@@ -706,10 +706,10 @@ def root():
 def health():
     return "OK"
 
-# 注册 /stream.wav
+# Регистрируем /stream.wav
 register_stream_route(app)
 
-# ---------- WebSocket：WebUI 文本（ASR/AI 状态推送） ----------
+# ---------- WebSocket: текст WebUI (рассылка статуса ASR/AI) ----------
 @app.websocket("/ws_ui")
 async def ws_ui(ws: WebSocket):
     await ws.accept()
@@ -724,7 +724,7 @@ async def ws_ui(ws: WebSocket):
     finally:
         ui_clients.pop(id(ws), None)
 
-# ---------- WebSocket：ESP32 音频入口（ASR 上行） ----------
+# ---------- WebSocket: аудиовход ESP32 (восходящий поток ASR) ----------
 @app.websocket("/ws_audio")
 async def ws_audio(ws: WebSocket):
     global esp32_audio_ws
@@ -763,7 +763,7 @@ async def ws_audio(ws: WebSocket):
                 idle = time.monotonic() - last_ts
                 if idle > 0.35:
                     try:
-                        for _ in range(30):  # ~600ms 静音
+                        for _ in range(30):  # ~600 мс тишины
                             recognition.send_audio_frame(SILENCE_20MS)
                         last_ts = time.monotonic()
                     except Exception:
@@ -797,14 +797,14 @@ async def ws_audio(ws: WebSocket):
                     def post(coro):
                         asyncio.run_coroutine_threadsafe(coro, loop)
 
-                    # 组装 ASR 回调（把依赖都注入）
+                    # собираем колбэк ASR (внедряем все зависимости)
                     cb = ASRCallback(
                         on_sdk_error=lambda s: post(on_sdk_error(s)),
                         post=post,
                         ui_broadcast_partial=ui_broadcast_partial,
                         ui_broadcast_final=ui_broadcast_final,
                         is_playing_now_fn=is_playing_now,
-                        start_ai_with_text_fn=start_ai_with_text_custom,  # 使用自定义版本
+                        start_ai_with_text_fn=start_ai_with_text_custom,  # используем собственную версию
                         full_system_reset_fn=full_system_reset,
                         interrupt_lock=interrupt_lock,
                     )
@@ -818,22 +818,22 @@ async def ws_audio(ws: WebSocket):
                     streaming = True
                     last_ts = time.monotonic()
                     keepalive_task = asyncio.create_task(keepalive_loop())
-                    await ui_broadcast_partial("（已开始接收音频…）")
+                    await ui_broadcast_partial("(приём аудио начат…)")
                     await ws.send_text("OK:STARTED")
 
                 elif cmd == "STOP":
                     if recognition:
-                        for _ in range(15):  # ~300ms 静音
+                        for _ in range(15):  # ~300 мс тишины
                             try: recognition.send_audio_frame(SILENCE_20MS)
                             except Exception: break
                     await stop_rec(send_notice="OK:STOPPED")
 
                 elif raw.startswith("PROMPT:"):
-                    # 设备端主动发起一轮：同样使用“先硬重置后播放”的强语义
+                    # устройство само инициирует раунд: та же строгая семантика «сначала жёсткий сброс, потом воспроизведение»
                     text = raw[len("PROMPT:"):].strip()
                     if text:
                         async with interrupt_lock:
-                            await start_ai_with_text_custom(text) # 使用自定义的启动函数
+                            await start_ai_with_text_custom(text) # используем собственную функцию запуска
                         await ws.send_text("OK:PROMPT_ACCEPTED")
                     else:
                         await ws.send_text("ERR:EMPTY_PROMPT")
@@ -859,7 +859,7 @@ async def ws_audio(ws: WebSocket):
             esp32_audio_ws = None
         print("[WS] connection closed")
 
-# ---------- WebSocket：ESP32 相机入口（JPEG 二进制） ----------
+# ---------- WebSocket: вход камеры ESP32 (двоичный JPEG) ----------
 @app.websocket("/ws/camera")
 async def ws_camera_esp(ws: WebSocket):
     global esp32_camera_ws, blind_path_navigator, cross_street_navigator, cross_street_active, navigation_active, orchestrator
@@ -870,37 +870,37 @@ async def ws_camera_esp(ws: WebSocket):
     await ws.accept()
     print("[CAMERA] ESP32 connected")
     
-    # 【新增】初始化盲道导航器
+    # [Новое] инициализация навигатора по тактильной дорожке
     if blind_path_navigator is None and yolo_seg_model is not None:
         blind_path_navigator = BlindPathNavigator(yolo_seg_model, obstacle_detector)
-        print("[NAVIGATION] 盲道导航器已初始化")
+        print("[NAVIGATION] Навигатор по тактильной дорожке инициализирован")
     else:
         if blind_path_navigator is not None:
-            print("[NAVIGATION] 导航器已存在，无需重新初始化")
+            print("[NAVIGATION] Навигатор уже существует, повторная инициализация не нужна")
         elif yolo_seg_model is None:
-            print("[NAVIGATION] 警告：YOLO模型未加载，无法初始化导航器")
+            print("[NAVIGATION] Предупреждение: модель YOLO не загружена, инициализировать навигатор невозможно")
     
-    # 【新增】初始化过马路导航器
+    # [Новое] инициализация навигатора перехода через дорогу
     if cross_street_navigator is None:
         if yolo_seg_model:
             cross_street_navigator = CrossStreetNavigator(
                 seg_model=yolo_seg_model,
-                coco_model=None,  # 不使用交通灯检测
-                obs_model=None    # 暂时也不用障碍物检测，让它更快
+                coco_model=None,  # детекцию светофора не используем
+                obs_model=None    # детекцию препятствий пока тоже не используем, чтобы работало быстрее
             )
-            print("[CROSS_STREET] 过马路导航器已初始化（简化版 - 仅斑马线检测）")
+            print("[CROSS_STREET] Навигатор перехода через дорогу инициализирован (упрощённая версия - только детекция зебры)")
         else:
-            print("[CROSS_STREET] 错误：缺少分割模型，无法初始化过马路导航器")
+            print("[CROSS_STREET] Ошибка: отсутствует модель сегментации, инициализировать навигатор перехода невозможно")
             
             if not yolo_seg_model:
-                print("[CROSS_STREET] - 缺少分割模型 (yolo_seg_model)")
+                print("[CROSS_STREET] - отсутствует модель сегментации (yolo_seg_model)")
             if not obstacle_detector:
-                print("[CROSS_STREET] - 缺少障碍物检测器 (obstacle_detector)")
+                print("[CROSS_STREET] - отсутствует детектор препятствий (obstacle_detector)")
     
     if orchestrator is None and blind_path_navigator is not None and cross_street_navigator is not None:
         orchestrator = NavigationMaster(blind_path_navigator, cross_street_navigator)
-        print("[NAV MASTER] 统领状态机已初始化（托管模式）")
-    frame_counter = 0  # 添加帧计数器
+        print("[NAV MASTER] Оркестрирующий конечный автомат инициализирован (управляемый режим)")
+    frame_counter = 0  # добавляем счётчик кадров
     
     try:
         while True:
@@ -909,48 +909,48 @@ async def ws_camera_esp(ws: WebSocket):
                 data = msg["bytes"]
                 frame_counter += 1
                 
-                # 【新增】录制原始帧
+                # [Новое] запись исходного кадра
                 try:
                     sync_recorder.record_frame(data)
                 except Exception as e:
-                    if frame_counter % 100 == 0:  # 避免日志刷屏
-                        print(f"[RECORDER] 录制帧失败: {e}")
+                    if frame_counter % 100 == 0:  # чтобы не засорять лог
+                        print(f"[RECORDER] Ошибка записи кадра: {e}")
                 
                 try:
                     last_frames.append((time.time(), data))
                 except Exception:
                     pass
                 
-                # 推送到bridge_io（供yolomedia使用）
+                # отправляем в bridge_io (для yolomedia)
                 bridge_io.push_raw_jpeg(data)
                 
-                # 【调试】检查导航条件
-                if frame_counter % 30 == 0:  # 每30帧输出一次
+                # [Отладка] проверяем условия навигации
+                if frame_counter % 30 == 0:  # вывод раз в 30 кадров
                     state_dbg = orchestrator.get_state() if orchestrator else "N/A"
-                    print(f"[NAVIGATION DEBUG] 帧:{frame_counter}, state={state_dbg}, yolomedia_running={yolomedia_running}")
+                    print(f"[NAVIGATION DEBUG] кадр:{frame_counter}, state={state_dbg}, yolomedia_running={yolomedia_running}")
                 
-                # 统一解码（添加更严格的异常处理）
+                # единое декодирование (с более строгой обработкой исключений)
                 try:
                     arr = np.frombuffer(data, dtype=np.uint8)
                     bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                    # 验证解码结果
+                    # проверяем результат декодирования
                     if bgr is None or bgr.size == 0:
                         if frame_counter % 30 == 0:
-                            print(f"[JPEG] 解码失败：数据长度={len(data)}")
+                            print(f"[JPEG] Ошибка декодирования: длина данных={len(data)}")
                         bgr = None
                 except Exception as e:
                     if frame_counter % 30 == 0:
-                        print(f"[JPEG] 解码异常: {e}")
+                        print(f"[JPEG] Исключение при декодировании: {e}")
                     bgr = None
 
-                # 【托管】优先交给统领状态机（寻物未占用画面时）
-                # 【修改】找物品模式时不执行导航处理，让yolomedia接管画面
+                # [Управление] в первую очередь передаём оркестрирующему автомату (когда изображение не занято поиском предмета)
+                # [Изменено] в режиме поиска предмета навигационная обработка не выполняется, изображением управляет yolomedia
                 if orchestrator and not yolomedia_running and bgr is not None:
                     current_state = orchestrator.get_state()
                     
-                    # 【新增】找物品模式：不处理画面，等待yolomedia发送处理后的帧
+                    # [Новое] режим поиска предмета: изображение не обрабатываем, ждём обработанные кадры от yolomedia
                     if current_state == "ITEM_SEARCH":
-                        # 找物品模式下，如果yolomedia还没开始发送帧，先显示原始画面
+                        # в режиме поиска предмета, пока yolomedia не начал отправлять кадры, показываем исходное изображение
                         if not yolomedia_sending_frames and camera_viewers:
                             ok, enc = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
                             if ok:
@@ -963,37 +963,37 @@ async def ws_camera_esp(ws: WebSocket):
                                         dead.append(viewer_ws)
                                 for d in dead:
                                     camera_viewers.discard(d)
-                        continue  # 跳过后续的导航处理
+                        continue  # пропускаем дальнейшую навигационную обработку
                     
                     out_img = bgr
                     try:
-                        # 【新增】检查是否在红绿灯检测模式
+                        # [Новое] проверяем, включён ли режим детекции светофора
                         if current_state == "TRAFFIC_LIGHT_DETECTION":
-                            # 红绿灯检测模式：在主线程中直接处理，避免掉帧
+                            # режим детекции светофора: обрабатываем прямо в основном потоке, чтобы не терять кадры
                             import trafficlight_detection
                             result = trafficlight_detection.process_single_frame(bgr, ui_broadcast_callback=ui_broadcast_final)
                             out_img = result['vis_image'] if result['vis_image'] is not None else bgr
                         else:
-                            # 其他模式：正常的导航处理
+                            # прочие режимы: обычная навигационная обработка
                             res = orchestrator.process_frame(bgr)
 
-                            # 语音引导（内部已节流）
-                            # 注：omni对话时已切换到CHAT模式，不会生成导航语音
+                            # голосовые подсказки (троттлинг уже внутри)
+                            # примечание: во время omni-диалога режим уже переключён на CHAT, навигационные подсказки не генерируются
                             if res.guidance_text:
                                 try:
-                                    # 先播放语音，再广播到UI
+                                    # сначала воспроизводим голос, затем рассылаем в UI
                                     play_voice_text(res.guidance_text)
                                     await ui_broadcast_final(f"[导航] {res.guidance_text}")
                                 except Exception:
                                     pass
 
-                            # 输出图像
+                            # вывод изображения
                             out_img = res.annotated_image if res.annotated_image is not None else bgr
                     except Exception as e:
                         if frame_counter % 100 == 0:
-                            print(f"[NAV MASTER] 处理帧时出错: {e}")
+                            print(f"[NAV MASTER] Ошибка при обработке кадра: {e}")
 
-                    # 广播图像
+                    # рассылка изображения
                     if camera_viewers and out_img is not None:
                         ok, enc = cv2.imencode(".jpg", out_img, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
                         if ok:
@@ -1006,10 +1006,10 @@ async def ws_camera_esp(ws: WebSocket):
                                     dead.append(viewer_ws)
                             for d in dead:
                                 camera_viewers.discard(d)
-                    # 已托管，进入下一帧
+                    # обработано оркестратором, переходим к следующему кадру
                     continue
 
-                # 【回退】寻物占用或者未解码成功，按原始画面回传
+                # [Запасной путь] изображение занято поиском или не декодировано — возвращаем исходное
                 if not yolomedia_sending_frames and camera_viewers:
                     try:
                         if bgr is None:
@@ -1045,16 +1045,16 @@ async def ws_camera_esp(ws: WebSocket):
         esp32_camera_ws = None
         print("[CAMERA] ESP32 disconnected")
         
-        # 【新增】清理导航状态
+        # [Новое] очищаем состояние навигации
         if blind_path_navigator:
             blind_path_navigator.reset()
         if cross_street_navigator:
             cross_street_navigator.reset()
         if orchestrator:
             orchestrator.reset()
-            print("[NAV MASTER] 统领器已重置")
+            print("[NAV MASTER] Оркестратор сброшен")
 
-# ---------- WebSocket：浏览器订阅相机帧 ----------
+# ---------- WebSocket: подписка браузера на кадры камеры ----------
 @app.websocket("/ws/viewer")
 async def ws_viewer(ws: WebSocket):
     await ws.accept()
@@ -1062,7 +1062,7 @@ async def ws_viewer(ws: WebSocket):
     print(f"[VIEWER] Browser connected. Total viewers: {len(camera_viewers)}", flush=True)
     try:
         while True:
-            # 保持连接活跃
+            # поддерживаем соединение активным
             await asyncio.sleep(60)
     except WebSocketDisconnect:
         print("[VIEWER] Browser disconnected", flush=True)
@@ -1073,7 +1073,7 @@ async def ws_viewer(ws: WebSocket):
             pass
         print(f"[VIEWER] Removed. Total viewers: {len(camera_viewers)}", flush=True)
 
-# ---------- WebSocket：浏览器订阅 IMU ----------
+# ---------- WebSocket: подписка браузера на IMU ----------
 @app.websocket("/ws")
 async def ws_imu(ws: WebSocket):
     await ws.accept()
@@ -1097,7 +1097,7 @@ async def imu_broadcast(msg: str):
     for ws in dead:
         imu_ws_clients.discard(ws)
 
-# ---------- 服务端 IMU 估计（原样保留） ----------
+# ---------- Серверная оценка IMU (оставлено как есть) ----------
 from math import atan2, hypot, pi
 GRAV_BETA   = 0.98
 STILL_W     = 0.4
@@ -1210,7 +1210,7 @@ def process_imu_and_maybe_store(d: Dict[str, Any]):
         }
         imu_store.append(item)
 
-# ---------- UDP 接收 IMU 并转发 ----------
+# ---------- Приём IMU по UDP и пересылка ----------
 class UDPProto(asyncio.DatagramProtocol):
     def connection_made(self, transport):
         print(f"[UDP] listening on {UDP_IP}:{UDP_PORT}")
@@ -1227,24 +1227,24 @@ class UDPProto(asyncio.DatagramProtocol):
 
 
 
-# === 新增：注册给 bridge_io 的发送回调（把 JPEG 广播给 /ws/viewer） ===
+# === Новое: колбэк отправки, регистрируемый в bridge_io (рассылает JPEG в /ws/viewer) ===
 @app.on_event("startup")
 async def on_startup_register_bridge_sender():
-    # 保存主线程的事件循环
+    # сохраняем цикл событий основного потока
     main_loop = asyncio.get_event_loop()
     
     def _sender(jpeg_bytes: bytes):
-        # 注意：这个函数可能在非协程线程里被调用，需要切回主事件循环
+        # внимание: функция может вызываться из потока без корутин, нужно переключиться на основной цикл событий
         try:
-            # 检查事件循环状态，避免在关闭时发送
+            # проверяем состояние цикла событий, чтобы не отправлять во время закрытия
             if main_loop.is_closed():
                 return
             
-            # 标记YOLO已经开始发送处理后的帧
+            # отмечаем, что YOLO начал отправлять обработанные кадры
             global yolomedia_sending_frames
             if not yolomedia_sending_frames:
                 yolomedia_sending_frames = True
-                print("[YOLOMEDIA] 开始发送处理后的帧，切换到YOLO画面", flush=True)
+                print("[YOLOMEDIA] Начата отправка обработанных кадров, переключаемся на изображение YOLO", flush=True)
             
             async def _broadcast():
                 if not camera_viewers:
@@ -1261,11 +1261,11 @@ async def on_startup_register_bridge_sender():
                     except Exception:
                         pass
             
-            # 使用保存的主线程事件循环
+            # используем сохранённый цикл событий основного потока
             future = asyncio.run_coroutine_threadsafe(_broadcast(), main_loop)
-            # 不等待结果，避免阻塞生产线程
+            # не ждём результат, чтобы не блокировать поток-производитель
         except Exception as e:
-            # 只在非预期错误时打印日志
+            # логируем только неожиданные ошибки
             if "Event loop is closed" not in str(e):
                 print(f"[DEBUG] _sender error: {e}", flush=True)
 
@@ -1273,13 +1273,13 @@ async def on_startup_register_bridge_sender():
 
 @app.on_event("startup")
 async def on_startup_init_audio():
-    """启动时初始化音频系统"""
-    # 在后台线程中初始化，避免阻塞启动
+    """Инициализация аудиосистемы при запуске"""
+    # инициализируем в фоновом потоке, чтобы не блокировать запуск
     def _init():
         try:
             initialize_audio_system()
         except Exception as e:
-            print(f"[AUDIO] 初始化失败: {e}")
+            print(f"[AUDIO] Ошибка инициализации: {e}")
     
     threading.Thread(target=_init, daemon=True).start()
 
@@ -1290,21 +1290,21 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    """应用关闭时的清理工作"""
-    print("[SHUTDOWN] 开始清理资源...")
+    """Очистка при завершении приложения"""
+    print("[SHUTDOWN] Начинаем освобождение ресурсов...")
     
-    # 停止YOLO媒体处理
+    # останавливаем медиаобработку YOLO
     stop_yolomedia()
     
-    # 停止音频和AI任务
+    # останавливаем аудио и задачи AI
     await hard_reset_audio("shutdown")
     
-    print("[SHUTDOWN] 资源清理完成")
+    print("[SHUTDOWN] Освобождение ресурсов завершено")
 
-# app_main.py —— 在文件里已有的 @app.on_event("startup") 之后，再加一个新的 startup 钩子
+# app_main.py —— после уже имеющегося в файле @app.on_event("startup") добавляем ещё один startup-хук
 
 
-# --- 导出接口（可选） ---
+# --- Экспортируемый интерфейс (опционально) ---
 def get_last_frames():
     return last_frames
 

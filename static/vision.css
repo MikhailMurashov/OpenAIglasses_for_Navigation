@@ -1,4 +1,4 @@
-/* 科技感配色方案 */
+/* Технологичная цветовая схема */
 :root {
   --tech-bg: #0a0e1b;
   --tech-card: #111827;
@@ -14,7 +14,7 @@
   --glow-secondary: 0 0 30px rgba(139, 92, 246, 0.5);
 }
 
-/* 视觉识别画布容器 */
+/* Контейнер холста визуального распознавания */
 .vision-container {
   position: relative;
   background: var(--tech-bg);
@@ -30,7 +30,7 @@
   display: block;
 }
 
-/* 覆盖层 */
+/* Оверлей */
 .vision-overlay {
   position: absolute;
   top: 0;
@@ -40,7 +40,7 @@
   pointer-events: none;
 }
 
-/* HUD样式 */
+/* Стили HUD */
 .hud-element {
   position: absolute;
   color: var(--tech-text);
@@ -48,7 +48,7 @@
   text-shadow: 0 0 10px rgba(59, 130, 246, 0.8);
 }
 
-/* 状态指示器 */
+/* Индикатор состояния */
 .status-indicator {
   position: absolute;
   top: 20px;
@@ -75,7 +75,7 @@
   letter-spacing: 1px;
 }
 
-/* 进度条 */
+/* Индикаторы прогресса */
 .progress-container {
   position: absolute;
   bottom: 40px;
@@ -120,7 +120,7 @@
   box-shadow: 0 0 20px rgba(59, 130, 246, 0.6);
 }
 
-/* 手部追踪样式 */
+/* Стили отслеживания руки */
 .hand-skeleton {
   stroke: var(--tech-accent);
   stroke-width: 2;
@@ -133,7 +133,7 @@
   filter: drop-shadow(0 0 8px rgba(6, 182, 212, 1));
 }
 
-/* 目标锁定样式 */
+/* Стили захвата цели */
 .target-lock {
   stroke: var(--tech-success);
   stroke-width: 3;
@@ -148,7 +148,7 @@
   to { transform: rotate(360deg); }
 }
 
-/* 闪烁动画 */
+/* Анимация мигания */
 .flash-overlay {
   position: absolute;
   top: 0;
@@ -164,7 +164,7 @@
   50% { opacity: 1; }
 }
 
-/* 数据显示面板 */
+/* Панель отображения данных */
 .data-panel {
   position: absolute;
   top: 20px;

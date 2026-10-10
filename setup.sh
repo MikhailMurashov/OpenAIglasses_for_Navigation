@@ -1,105 +1,105 @@
 #!/bin/bash
-# AI Glass System - Linux/macOS 快速安装脚本
+# AI Glass System - Linux/macOS скрипт быстрой установки
 
-set -e  # 遇到错误立即退出
+set -e  # немедленный выход при ошибке
 
 echo "=========================================="
-echo "  AI Glass System - 自动安装脚本"
+echo "  AI Glass System - скрипт автоматической установки"
 echo "=========================================="
 echo ""
 
-# 颜色定义
+# Определение цветов
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# 检查 Python 版本
-echo "正在检查 Python 版本..."
+# Проверка версии Python
+echo "Проверка версии Python..."
 if ! command -v python3 &> /dev/null; then
-    echo -e "${RED}错误: 未找到 Python 3${NC}"
-    echo "请先安装 Python 3.9-3.11"
+    echo -e "${RED}Ошибка: Python 3 не найден${NC}"
+    echo "Сначала установите Python 3.9-3.11"
     exit 1
 fi
 
 PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
-echo -e "${GREEN}✓ 找到 Python $PYTHON_VERSION${NC}"
+echo -e "${GREEN}✓ Найден Python $PYTHON_VERSION${NC}"
 
-# 检查 Python 版本是否在支持范围内
+# Проверяем, входит ли версия Python в поддерживаемый диапазон
 PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
 PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
 
 if [ "$PYTHON_MAJOR" -ne 3 ] || [ "$PYTHON_MINOR" -lt 9 ] || [ "$PYTHON_MINOR" -gt 11 ]; then
-    echo -e "${YELLOW}警告: Python 版本 $PYTHON_VERSION 可能不受支持${NC}"
-    echo "推荐使用 Python 3.9-3.11"
-    read -p "是否继续? (y/n) " -n 1 -r
+    echo -e "${YELLOW}Внимание: версия Python $PYTHON_VERSION может не поддерживаться${NC}"
+    echo "Рекомендуется Python 3.9-3.11"
+    read -p "Продолжить? (y/n) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         exit 1
     fi
 fi
 
-# 检查 CUDA（可选）
+# Проверка CUDA (опционально)
 echo ""
-echo "正在检查 CUDA..."
+echo "Проверка CUDA..."
 if command -v nvidia-smi &> /dev/null; then
-    echo -e "${GREEN}✓ 检测到 NVIDIA GPU${NC}"
+    echo -e "${GREEN}✓ Обнаружен NVIDIA GPU${NC}"
     nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
     HAS_GPU=true
 else
-    echo -e "${YELLOW}! 未检测到 NVIDIA GPU，将使用 CPU 模式（速度较慢）${NC}"
+    echo -e "${YELLOW}! NVIDIA GPU не обнаружен, будет использован режим CPU (медленнее)${NC}"
     HAS_GPU=false
 fi
 
-# 创建虚拟环境
+# Создание виртуального окружения
 echo ""
-echo "正在创建虚拟环境..."
+echo "Создание виртуального окружения..."
 if [ -d "venv" ]; then
-    echo -e "${YELLOW}虚拟环境已存在${NC}"
-    read -p "是否删除并重新创建? (y/n) " -n 1 -r
+    echo -e "${YELLOW}Виртуальное окружение уже существует${NC}"
+    read -p "Удалить и создать заново? (y/n) " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         rm -rf venv
         python3 -m venv venv
-        echo -e "${GREEN}✓ 虚拟环境已重新创建${NC}"
+        echo -e "${GREEN}✓ Виртуальное окружение создано заново${NC}"
     fi
 else
     python3 -m venv venv
-    echo -e "${GREEN}✓ 虚拟环境已创建${NC}"
+    echo -e "${GREEN}✓ Виртуальное окружение создано${NC}"
 fi
 
-# 激活虚拟环境
-echo "正在激活虚拟环境..."
+# Активация виртуального окружения
+echo "Активация виртуального окружения..."
 source venv/bin/activate
 
-# 升级 pip
+# Обновление pip
 echo ""
-echo "正在升级 pip..."
+echo "Обновление pip..."
 pip install --upgrade pip -q
-echo -e "${GREEN}✓ pip 已升级${NC}"
+echo -e "${GREEN}✓ pip обновлён${NC}"
 
-# 安装 PyTorch
+# Установка PyTorch
 echo ""
-echo "正在安装 PyTorch..."
+echo "Установка PyTorch..."
 if [ "$HAS_GPU" = true ]; then
-    echo "安装 GPU 版本 PyTorch (CUDA 11.8)..."
+    echo "Установка GPU-версии PyTorch (CUDA 11.8)..."
     pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 --index-url https://download.pytorch.org/whl/cu118 -q
 else
-    echo "安装 CPU 版本 PyTorch..."
+    echo "Установка CPU-версии PyTorch..."
     pip install torch torchvision -q
 fi
-echo -e "${GREEN}✓ PyTorch 已安装${NC}"
+echo -e "${GREEN}✓ PyTorch установлен${NC}"
 
-# 验证 PyTorch
-echo "验证 PyTorch 安装..."
-python3 -c "import torch; print(f'PyTorch 版本: {torch.__version__}'); print(f'CUDA 可用: {torch.cuda.is_available()}')"
+# Проверка PyTorch
+echo "Проверка установки PyTorch..."
+python3 -c "import torch; print(f'Версия PyTorch: {torch.__version__}'); print(f'CUDA доступна: {torch.cuda.is_available()}')"
 
-# 安装系统依赖（Linux）
+# Установка системных зависимостей (Linux)
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     echo ""
-    echo "正在检查系统依赖..."
+    echo "Проверка системных зависимостей..."
     
-    # 检测发行版
+    # Определение дистрибутива
     if [ -f /etc/os-release ]; then
         . /etc/os-release
         OS=$ID
@@ -108,43 +108,43 @@ if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     fi
     
     if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
-        echo "检测到 Ubuntu/Debian 系统"
-        echo "可能需要 sudo 权限来安装系统依赖..."
+        echo "Обнаружена система Ubuntu/Debian"
+        echo "Для установки системных зависимостей могут понадобиться права sudo..."
         sudo apt-get update -qq
         sudo apt-get install -y -qq portaudio19-dev libgl1-mesa-glx libglib2.0-0
-        echo -e "${GREEN}✓ 系统依赖已安装${NC}"
+        echo -e "${GREEN}✓ Системные зависимости установлены${NC}"
     else
-        echo -e "${YELLOW}! 未知的 Linux 发行版，请手动安装依赖${NC}"
-        echo "  需要: portaudio19-dev, libgl1-mesa-glx, libglib2.0-0"
+        echo -e "${YELLOW}! Неизвестный дистрибутив Linux, установите зависимости вручную${NC}"
+        echo "  Требуются: portaudio19-dev, libgl1-mesa-glx, libglib2.0-0"
     fi
 fi
 
-# 安装 Python 依赖
+# Установка зависимостей Python
 echo ""
-echo "正在安装 Python 依赖..."
+echo "Установка зависимостей Python..."
 pip install -r requirements.txt -q
-echo -e "${GREEN}✓ Python 依赖已安装${NC}"
+echo -e "${GREEN}✓ Зависимости Python установлены${NC}"
 
-# 创建 .env 文件
+# Создание файла .env
 echo ""
 if [ ! -f ".env" ]; then
-    echo "正在创建 .env 配置文件..."
+    echo "Создание конфигурационного файла .env..."
     cp .env.example .env
-    echo -e "${GREEN}✓ .env 文件已创建${NC}"
-    echo -e "${YELLOW}请编辑 .env 文件，填入您的 DASHSCOPE_API_KEY${NC}"
+    echo -e "${GREEN}✓ Файл .env создан${NC}"
+    echo -e "${YELLOW}Отредактируйте файл .env и укажите свой DASHSCOPE_API_KEY${NC}"
 else
-    echo -e "${YELLOW}.env 文件已存在，跳过${NC}"
+    echo -e "${YELLOW}Файл .env уже существует, пропускаем${NC}"
 fi
 
-# 创建必要的目录
+# Создание необходимых директорий
 echo ""
-echo "正在创建目录结构..."
+echo "Создание структуры директорий..."
 mkdir -p recordings model music voice
-echo -e "${GREEN}✓ 目录结构已创建${NC}"
+echo -e "${GREEN}✓ Структура директорий создана${NC}"
 
-# 检查模型文件
+# Проверка файлов моделей
 echo ""
-echo "正在检查模型文件..."
+echo "Проверка файлов моделей..."
 MODELS=("yolo-seg.pt" "yoloe-11l-seg.pt" "shoppingbest5.pt" "trafficlight.pt" "hand_landmarker.task")
 MISSING_MODELS=()
 
@@ -152,41 +152,41 @@ for model in "${MODELS[@]}"; do
     if [ -f "model/$model" ]; then
         echo -e "${GREEN}✓ $model${NC}"
     else
-        echo -e "${RED}✗ $model (缺失)${NC}"
+        echo -e "${RED}✗ $model (отсутствует)${NC}"
         MISSING_MODELS+=("$model")
     fi
 done
 
 if [ ${#MISSING_MODELS[@]} -gt 0 ]; then
     echo ""
-    echo -e "${YELLOW}警告: 缺少以下模型文件:${NC}"
+    echo -e "${YELLOW}Внимание: отсутствуют следующие файлы моделей:${NC}"
     for model in "${MISSING_MODELS[@]}"; do
         echo "  - $model"
     done
-    echo "请将模型文件放入 model/ 目录"
+    echo "Поместите файлы моделей в директорию model/"
 fi
 
-# 完成
+# Готово
 echo ""
 echo "=========================================="
-echo -e "${GREEN}安装完成!${NC}"
+echo -e "${GREEN}Установка завершена!${NC}"
 echo "=========================================="
 echo ""
-echo "下一步:"
-echo "1. 编辑 .env 文件，填入您的 API 密钥:"
+echo "Дальнейшие шаги:"
+echo "1. Отредактируйте файл .env и укажите свой API-ключ:"
 echo "   nano .env"
 echo ""
-echo "2. 确保所有模型文件已放入 model/ 目录"
+echo "2. Убедитесь, что все файлы моделей помещены в директорию model/"
 echo ""
-echo "3. 启动系统:"
+echo "3. Запустите систему:"
 echo "   source venv/bin/activate"
 echo "   python app_main.py"
 echo ""
-echo "4. 访问 http://localhost:8081"
+echo "4. Откройте http://localhost:8081"
 echo ""
 
-# 提示激活虚拟环境
-echo -e "${YELLOW}注意: 每次使用前请激活虚拟环境:${NC}"
+# Напоминание об активации виртуального окружения
+echo -e "${YELLOW}Примечание: перед каждым использованием активируйте виртуальное окружение:${NC}"
 echo "  source venv/bin/activate"
 echo ""
 

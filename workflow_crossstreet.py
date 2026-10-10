@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-过马路工作流（简化版 - 仅斑马线检测，但保留导航功能）
-- 直连版本，无 Celery/Redis
-- 仅检测斑马线，无交通灯检测
-- 保留斑马线导航功能（角度、偏移计算）
-- 保留可视化（引导线、目标点等）
-- 每帧都进行分割；若该帧分割失败，则用上一帧从掩码打点的光流特征点追踪，重建掩码保持位置，直到下一次分割检出
+Рабочий процесс перехода дороги (упрощённая версия — только детекция пешеходного перехода, но с сохранением навигации)
+- Версия с прямым подключением, без Celery/Redis
+- Детектируется только пешеходный переход, без детекции светофора
+- Сохранена навигация по пешеходному переходу (вычисление угла и смещения)
+- Сохранена визуализация (направляющие линии, целевые точки и т. п.)
+- Сегментация выполняется на каждом кадре; если на кадре она не удалась, маска восстанавливается трекингом оптическим потоком по особым точкам, расставленным по маске предыдущего кадра, и удерживает положение до следующего успешного обнаружения сегментацией
 """
 import torch
 import os
@@ -15,9 +15,9 @@ import numpy as np
 import cv2
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
-# 【移除】from audio_player import play_voice_text - 不在工作流内部播放音频
+# 【Удалено】from audio_player import play_voice_text — аудио не воспроизводится внутри рабочего процесса
 
-# 可选：用于更精致的数据面板（与 blindpath 一致）
+# Опционально: для более аккуратной панели данных (как в blindpath)
 try:
     from PIL import Image, ImageDraw, ImageFont
     PIL_AVAILABLE = True
@@ -25,13 +25,13 @@ except ImportError:
     PIL_AVAILABLE = False
     Image, ImageDraw, ImageFont = None, None, None
 
-# 可选：自动启用障碍物检测（与 blindpath 一致）
+# Опционально: автоматическое включение детекции препятствий (как в blindpath)
 try:
     from obstacle_detector_client import ObstacleDetectorClient
 except Exception:
     ObstacleDetectorClient = None
 
-# 红绿灯检测模块
+# Модуль детекции светофора
 try:
     import trafficlight_detection
     TRAFFIC_LIGHT_AVAILABLE = True
@@ -41,42 +41,42 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
-# ========== 状态常量 ==========
-STATE_SEEKING = "SEEKING_CROSSWALK"      # 寻找并对准远处的斑马线
-STATE_WAIT_LIGHT = "WAIT_TRAFFIC_LIGHT"  # 等待红绿灯判定
-STATE_CROSSING = "CROSSING"              # 正在过马路
+# ========== Константы состояний ==========
+STATE_SEEKING = "SEEKING_CROSSWALK"      # Поиск и выравнивание по удалённому пешеходному переходу
+STATE_WAIT_LIGHT = "WAIT_TRAFFIC_LIGHT"  # Ожидание определения сигнала светофора
+STATE_CROSSING = "CROSSING"              # Идёт переход дороги
 
-# ========== 配置参数 ==========
+# ========== Параметры конфигурации ==========
 CROSSWALK_MIN_CONF = float(os.getenv('CROSSWALK_MIN_CONF', '0.3'))
 CROSSWALK_MIN_AREA = int(os.getenv('CROSSWALK_MIN_AREA', '5000'))
-BLIND_MIN_CONF = float(os.getenv('BLIND_MIN_CONF', '0.34'))  # 盲道最低置信度（更高，防误判）
-ANGLE_THRESH_DEG = float(os.getenv('CROSSWALK_ANGLE_THRESH_DEG', '5.0'))  # 默认阈值略放宽
-OFFSET_THRESH = float(os.getenv('CROSSWALK_OFFSET_THRESH', '0.08'))        # 默认阈值略放宽
+BLIND_MIN_CONF = float(os.getenv('BLIND_MIN_CONF', '0.34'))  # Минимальная уверенность для тактильной дорожки (выше, против ложных срабатываний)
+ANGLE_THRESH_DEG = float(os.getenv('CROSSWALK_ANGLE_THRESH_DEG', '5.0'))  # Порог по умолчанию слегка ослаблен
+OFFSET_THRESH = float(os.getenv('CROSSWALK_OFFSET_THRESH', '0.08'))        # Порог по умолчанию слегка ослаблен
 
-# 远距离对准阈值（更宽松，避免过于敏感）
-SEEKING_ANGLE_THRESH_DEG = 15.0  # 远距离角度阈值（更宽松）
-SEEKING_OFFSET_THRESH = 0.20     # 远距离偏移阈值（更宽松）
+# Пороги выравнивания на дальней дистанции (мягче, чтобы избежать излишней чувствительности)
+SEEKING_ANGLE_THRESH_DEG = 15.0  # Порог угла на дальней дистанции (мягче)
+SEEKING_OFFSET_THRESH = 0.20     # Порог смещения на дальней дистанции (мягче)
 
-# 远距离对准阈值（判定"很近"的条件，更严格）
-CROSSWALK_NEAR_AREA_RATIO = 0.30  # 斑马线占画面30%认为"很近"（提高）
-CROSSWALK_NEAR_BOTTOM_RATIO = 0.80  # 斑马线底部超过画面80%认为"很近"（提高）
-CROSSWALK_NEAR_MIN_HEIGHT_RATIO = 0.35  # 斑马线高度占画面35%以上（新增条件）
+# Пороги выравнивания на дальней дистанции (условия «очень близко», строже)
+CROSSWALK_NEAR_AREA_RATIO = 0.30  # Переход занимает 30% кадра — считается «очень близко» (повышено)
+CROSSWALK_NEAR_BOTTOM_RATIO = 0.80  # Нижний край перехода ниже 80% кадра — считается «очень близко» (повышено)
+CROSSWALK_NEAR_MIN_HEIGHT_RATIO = 0.35  # Высота перехода более 35% кадра (новое условие)
 
-# 红绿灯判定参数
-GREEN_LIGHT_STABLE_FRAMES = 5  # 绿灯稳定帧数
+# Параметры определения сигнала светофора
+GREEN_LIGHT_STABLE_FRAMES = 5  # Число кадров стабильного зелёного
 
-# 类别ID绑定（与训练集对应）
-CW_ID = int(os.getenv("AIGLASS_SEG_CW_ID", "0"))  # 斑马线
-BP_ID = int(os.getenv("AIGLASS_SEG_BP_ID", "1"))  # 盲道
+# Привязка ID классов (соответствует обучающему набору)
+CW_ID = int(os.getenv("AIGLASS_SEG_CW_ID", "0"))  # пешеходный переход
+BP_ID = int(os.getenv("AIGLASS_SEG_BP_ID", "1"))  # тактильная дорожка
 
-# 斑马线与盲道的同义名集合
+# Наборы синонимов для пешеходного перехода и тактильной дорожки
 _CW = {'zebra_crossing', 'zebra crossing', 'zebra', 'crosswalk', 'road_crossing', 'road crossing'}
 _BP = {'blind_path', 'tactile_paving', 'tactile paving', 'blind path'}
 
-# 盲道"真伪判定"阈值
-BP_VALID_IOU_THR = 0.40  # 与斑马线 IoU 超过此值，判为"混淆"，不当盲道
+# Пороги «проверки подлинности» тактильной дорожки
+BP_VALID_IOU_THR = 0.40  # Если IoU с пешеходным переходом выше этого значения — считается «путаницей», не тактильная дорожка
 
-# 追踪/打点参数
+# Параметры трекинга/расстановки точек
 INNER_OFFSET_PX_LOCK = 5
 EDGE_DILATE_PX = 2
 LK_PARAMS = dict(
@@ -91,24 +91,24 @@ FEATURE_PARAMS = dict(
     blockSize=7
 )
 
-# 时序平滑与保活
-MASK_EMA_ALPHA = 0.6   # EMA 平滑权重
-TRACK_MIN_POINTS = 30  # 追踪最少特征点阈值
-TRACK_RESEED_EVERY = 12  # 每隔 N 帧在成功分割时重播种一次特征点
+# Временное сглаживание и удержание
+MASK_EMA_ALPHA = 0.6   # Вес EMA-сглаживания
+TRACK_MIN_POINTS = 30  # Минимальное число особых точек для трекинга
+TRACK_RESEED_EVERY = 12  # Каждые N кадров при успешной сегментации заново расставлять особые точки
 
-# 可视化颜色（BGR）
+# Цвета визуализации (BGR)
 VIS_COLORS = {
-    "crosswalk": (0, 165, 255),   # 橙色
-    "centerline": (255, 255, 0),  # 青色 - 引导中心线
-    "target_point": (255, 0, 255), # 粉色 - 引导目标点
-    "hint": (0, 255, 255),        # 黄色
-    "stripes": (0, 128, 255),     # 橙蓝 - 条纹线段
-    "heading": (0, 0, 255),       # 红色 - 方向箭头
+    "crosswalk": (0, 165, 255),   # оранжевый
+    "centerline": (255, 255, 0),  # голубой — направляющая центральная линия
+    "target_point": (255, 0, 255), # розовый — направляющая целевая точка
+    "hint": (0, 255, 255),        # жёлтый
+    "stripes": (0, 128, 255),     # оранжево-синий — отрезки полос
+    "heading": (0, 0, 255),       # красный — стрелка направления
 }
 
 @dataclass
 class CrossStreetResult:
-    """过马路导航结果"""
+    """Результат навигации при переходе дороги"""
     annotated_image: Optional[np.ndarray] = None
     guidance_text: str = ""
     visualizations: List[Dict[str, Any]] = None
@@ -118,9 +118,9 @@ class CrossStreetResult:
         if self.visualizations is None:
             self.visualizations = []
 
-# ========== 辅助函数 ==========
+# ========== Вспомогательные функции ==========
 def _score_of(d) -> float:
-    """兼容不同检测结构，取出置信度；取不到就给 0.0（保守）"""
+    """Извлечь уверенность из разных структур детекции; если не удалось — вернуть 0.0 (консервативно)"""
     for k in ("conf", "confidence", "score", "prob"):
         v = getattr(d, k, None)
         if v is not None:
@@ -131,15 +131,15 @@ def _score_of(d) -> float:
     return 0.0
 
 def _norm_name(s: str) -> str:
-    """标准化名称"""
+    """Нормализовать имя"""
     return str(s).lower().replace('_', ' ').strip()
 
 def _in_set(name: str, pool: set) -> bool:
-    """检查名称是否在集合中"""
+    """Проверить, входит ли имя в набор"""
     return _norm_name(name) in {_norm_name(x) for x in pool}
 
 def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
-    """计算两个mask的IoU"""
+    """Вычислить IoU двух масок"""
     if a is None or b is None: 
         return 0.0
     ai = a > 0
@@ -149,14 +149,14 @@ def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
     return float(inter) / float(union + 1e-6)
 
 def _looks_like_blind_path(bp_mask: np.ndarray, cw_mask: np.ndarray, H: int, W: int) -> bool:
-    """几何+互斥检查，过滤'横条纹/路牙'伪盲道"""
+    """Геометрическая проверка + проверка на взаимоисключение, отсев ложных тактильных дорожек («поперечные полосы/бордюр»)"""
     if bp_mask is None: 
         return False
     ys, xs = np.where(bp_mask > 0)
-    if xs.size < 80:  # 太小的片段直接丢
+    if xs.size < 80:  # Слишком маленькие фрагменты сразу отбрасываем
         return False
 
-    # 计算主轴角度
+    # Вычислить угол главной оси
     pts = np.stack([xs.astype(np.float32), ys.astype(np.float32)], axis=1)
     mean = pts.mean(axis=0)
     cov = np.cov((pts - mean).T)
@@ -168,19 +168,19 @@ def _looks_like_blind_path(bp_mask: np.ndarray, cw_mask: np.ndarray, H: int, W: 
     
     h = (ys.max() - ys.min() + 1)
     w = (xs.max() - xs.min() + 1)
-    aspect = h / float(w + 1e-6)  # 期望盲道"更竖一些"
+    aspect = h / float(w + 1e-6)  # Ожидаем, что тактильная дорожка «более вертикальная»
     iou_cw = _mask_iou(bp_mask, cw_mask)
 
-    # 1) 横向条纹过滤（放宽到 20°，给远端/轻微倾斜更多空间）
+    # 1) Отсев поперечных полос (ослаблено до 20°, больше запаса для дальнего края/лёгкого наклона)
     if abs(angle_deg) <= 20.0:
         return False
-    # 2) 形状过滤（放宽到 0.52）
+    # 2) Отсев по форме (ослаблено до 0.52)
     if aspect < 0.52:
         return False
-    # 3) 与斑马线高度重叠
+    # 3) Сильное перекрытие с пешеходным переходом
     if iou_cw >= BP_VALID_IOU_THR:
         return False
-    # 4) 底边窄条（疑似路牙）过滤
+    # 4) Отсев узкой полосы у нижнего края (вероятно, бордюр)
     bottom = bp_mask[int(0.88 * H):, :]
     if bottom.sum() > 0:
         bottom_share = bottom.sum() / float((bp_mask > 0).sum() + 1e-6)
@@ -189,7 +189,7 @@ def _looks_like_blind_path(bp_mask: np.ndarray, cw_mask: np.ndarray, H: int, W: 
     return True
 
 def _cls_of(d):
-    """提取检测对象的类别ID"""
+    """Извлечь ID класса объекта детекции"""
     for k in ("cls", "class_id", "category_id"):
         v = getattr(d, k, None)
         if v is not None:
@@ -200,7 +200,7 @@ def _cls_of(d):
     return None
 
 class CrossStreetNavigator:
-    """简化版过马路导航器 - 仅斑马线检测但保留导航（每帧分割 + 失败用光流保活）"""
+    """Упрощённый навигатор перехода дороги — только детекция пешеходного перехода, но с навигацией (сегментация на каждом кадре + удержание оптическим потоком при неудаче)"""
 
     def __init__(self, seg_model=None, coco_model=None, obs_model=None, device_id: str = "esp32"):
         self.seg_model = seg_model
@@ -209,27 +209,27 @@ class CrossStreetNavigator:
         self.last_guidance = ""
         self.crosswalk_detected = False
         self.last_guide_time = 0
-        self.guide_interval = 3.0  # 语音引导间隔（秒）
+        self.guide_interval = 3.0  # Интервал голосовых подсказок (с)
 
-        # —— 状态机 ——
-        self.state = STATE_SEEKING           # 当前状态
-        self.green_light_counter = 0         # 绿灯稳定帧计数
-        self.last_traffic_light = None       # 上一帧检测到的红绿灯
-        self.last_seeking_guidance = ""      # 上一次SEEKING状态的引导文本（用于节流）
-        self.last_waiting_light_time = 0     # 上次播报"正在等待绿灯"的时间
-        self.crossing_end_announced = False  # 是否已播报"过马路结束"（CROSSING状态用）
-        self.last_crosswalk_seen_time = 0    # 上次检测到斑马线的时间
-        self.last_blindpath_announce_time = 0  # 上次播报盲道提示的时间（用于节流重复播报）
+        # —— Конечный автомат ——
+        self.state = STATE_SEEKING           # Текущее состояние
+        self.green_light_counter = 0         # Счётчик кадров стабильного зелёного
+        self.last_traffic_light = None       # Светофор, обнаруженный на предыдущем кадре
+        self.last_seeking_guidance = ""      # Текст подсказки последнего состояния SEEKING (для ограничения частоты)
+        self.last_waiting_light_time = 0     # Время последнего озвучивания «ожидание зелёного»
+        self.crossing_end_announced = False  # Озвучено ли «переход завершён» (для состояния CROSSING)
+        self.last_crosswalk_seen_time = 0    # Время последнего обнаружения пешеходного перехода
+        self.last_blindpath_announce_time = 0  # Время последней подсказки о тактильной дорожке (для ограничения повторов)
 
-        # —— 时序/追踪状态 ——
-        self.prev_mask = None            # 上一帧稳定后的二值掩码
-        self.prev_mask_float = None      # 掩码 EMA 浮点缓冲
-        self.prev_mask_ts = 0.0          # 最近一次掩码更新时间
-        self.old_gray = None             # 上一帧灰度图（供 LK）
-        self.p0 = None                   # 上一帧特征点（N,1,2）
-        self.last_seed_frame = 0         # 上次播种特征点的帧号
+        # —— Состояние временной обработки/трекинга ——
+        self.prev_mask = None            # Стабилизированная бинарная маска предыдущего кадра
+        self.prev_mask_float = None      # Буфер EMA маски (float)
+        self.prev_mask_ts = 0.0          # Время последнего обновления маски
+        self.old_gray = None             # Полутоновое изображение предыдущего кадра (для LK)
+        self.p0 = None                   # Особые точки предыдущего кадра (N,1,2)
+        self.last_seed_frame = 0         # Номер кадра последней расстановки особых точек
 
-        # —— 避障（与 blindpath 一致） ——
+        # —— Обход препятствий (как в blindpath) ——
         self.obstacle_detector = obs_model
         self.prev_gray = None
         self.last_detected_obstacles = []
@@ -237,50 +237,50 @@ class CrossStreetNavigator:
         self.OBSTACLE_DETECTION_INTERVAL = int(os.getenv("AIGLASS_OBS_INTERVAL", "15"))
         self.OBSTACLE_CACHE_DURATION_FRAMES = int(os.getenv("AIGLASS_OBS_CACHE_FRAMES", "0"))
         
-        # 【新增】斑马线检测间隔配置
-        self.CROSSWALK_DETECTION_INTERVAL = int(os.getenv("AIGLASS_CROSSWALK_INTERVAL", "4"))  # 每4帧检测一次
+        # 【Новое】Настройка интервала детекции пешеходного перехода
+        self.CROSSWALK_DETECTION_INTERVAL = int(os.getenv("AIGLASS_CROSSWALK_INTERVAL", "4"))  # Детекция раз в 4 кадра
         self.last_crosswalk_detection_frame = 0
         self.last_detected_crosswalk_mask = None
         self.last_detected_blindpath_mask = None
 
-        # 自动启用障碍物检测（若未传入 obs_model）
+        # Автоматически включить детекцию препятствий (если obs_model не передан)
         if self.obstacle_detector is None and os.getenv("AIGLASS_OBS_AUTO", "1") != "0":
             try:
                 if ObstacleDetectorClient is not None:
                     model_path = os.getenv("AIGLASS_OBS_MODEL", "model/yoloe-11l-seg.pt")
                     self.obstacle_detector = ObstacleDetectorClient(model_path)
-                    logger.info("[CROSS_STREET] 障碍物检测器已自动加载")
+                    logger.info("[CROSS_STREET] Детектор препятствий загружен автоматически")
                 else:
-                    logger.warning("[CROSS_STREET] 未找到 ObstacleDetectorClient，跳过自动加载")
+                    logger.warning("[CROSS_STREET] ObstacleDetectorClient не найден, автозагрузка пропущена")
             except Exception as e:
-                logger.warning(f"[CROSS_STREET] 自动加载障碍物检测器失败: {e}")
+                logger.warning(f"[CROSS_STREET] Не удалось автоматически загрузить детектор препятствий: {e}")
 
-        # 如果模型有 predict 方法但没有 detect 方法，进行包装
+        # Если у модели есть метод predict, но нет detect — оборачиваем
         if self.seg_model and hasattr(self.seg_model, 'predict') and not hasattr(self.seg_model, 'detect'):
-            logger.info("[CROSS_STREET] 包装 YOLO 模型")
+            logger.info("[CROSS_STREET] Оборачиваем модель YOLO")
             self.seg_model = YOLOModelWrapper(self.seg_model)
         
-        # 【新增】打印检测间隔配置
-        logger.info(f"[CROSS_STREET] 斑马线检测间隔: 每{self.CROSSWALK_DETECTION_INTERVAL}帧")
+        # 【Новое】Вывести настройку интервала детекции
+        logger.info(f"[CROSS_STREET] Интервал детекции пешеходного перехода: каждые {self.CROSSWALK_DETECTION_INTERVAL} кадр(а/ов)")
 
-        # 确保模型在 GPU 上
+        # Убедиться, что модель на GPU
         if self.seg_model and torch.cuda.is_available():
             try:
                 if hasattr(self.seg_model, 'model') and hasattr(self.seg_model.model, 'to'):
                     self.seg_model.model.to('cuda')
                 elif hasattr(self.seg_model, 'to'):
                     self.seg_model.to('cuda')
-                logger.info("[CROSS_STREET] 模型已移至 GPU")
+                logger.info("[CROSS_STREET] Модель перенесена на GPU")
             except Exception as e:
-                logger.warning(f"[CROSS_STREET] 无法将模型移至 GPU: {e}")
+                logger.warning(f"[CROSS_STREET] Не удалось перенести модель на GPU: {e}")
 
     def reset(self):
-        """重置状态"""
+        """Сбросить состояние"""
         self.frame_counter = 0
         self.last_guidance = ""
         self.crosswalk_detected = False
         self.last_guide_time = 0
-        # 状态机
+        # Конечный автомат
         self.state = STATE_SEEKING
         self.green_light_counter = 0
         self.last_traffic_light = None
@@ -289,26 +289,26 @@ class CrossStreetNavigator:
         self.crossing_end_announced = False
         self.last_crosswalk_seen_time = 0
         self.last_blindpath_announce_time = 0
-        # 追踪
+        # Трекинг
         self.prev_mask = None
         self.prev_mask_float = None
         self.prev_mask_ts = 0.0
         self.old_gray = None
         self.p0 = None
         self.last_seed_frame = 0
-        # 避障缓存
+        # Кэш обхода препятствий
         self.prev_gray = None
         self.last_detected_obstacles = []
         self.last_obstacle_detection_frame = 0
-        # 重置红绿灯检测状态
+        # Сбросить состояние детекции светофора
         if TRAFFIC_LIGHT_AVAILABLE and trafficlight_detection:
             trafficlight_detection.reset_detection_state()
-        logger.info("[CROSS_STREET] 导航器已重置")
+        logger.info("[CROSS_STREET] Навигатор сброшен")
 
-    # —— 打点/追踪辅助 ——
+    # —— Вспомогательное для расстановки точек/трекинга ——
     @staticmethod
     def _inner_offset_edge(mask_bin: np.ndarray, offset_px=5, edge_dilate_px=2) -> np.ndarray:
-        """对二值掩码做内收后提边缘，便于在目标内部打光流特征点"""
+        """Сузить бинарную маску и выделить край, чтобы расставлять особые точки оптического потока внутри объекта"""
         if offset_px > 0:
             k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*offset_px+1, 2*offset_px+1))
             eroded = cv2.erode(mask_bin.astype(np.uint8), k, iterations=1)
@@ -322,7 +322,7 @@ class CrossStreetNavigator:
 
     @staticmethod
     def _hull_mask_from_points(points: np.ndarray, shape_hw: tuple) -> Optional[np.ndarray]:
-        """从一组点的凸包生成二值掩码"""
+        """Построить бинарную маску из выпуклой оболочки набора точек"""
         if points is None or len(points) < 3:
             return None
         H, W = shape_hw
@@ -334,18 +334,18 @@ class CrossStreetNavigator:
         return mask
 
     def _seed_points_from_mask(self, gray: np.ndarray, mask_bin: np.ndarray) -> Optional[np.ndarray]:
-        """基于掩码的内收边界，播种 LK 光流特征点"""
+        """Расставить особые точки LK-потока по суженной границе маски"""
         edge_mask = self._inner_offset_edge(mask_bin, offset_px=INNER_OFFSET_PX_LOCK, edge_dilate_px=EDGE_DILATE_PX)
         try:
             pts = cv2.goodFeaturesToTrack(gray, mask=edge_mask, **FEATURE_PARAMS)
             return pts
         except Exception as e:
-            logger.warning(f"[CROSS_STREET] goodFeaturesToTrack 失败: {e}")
+            logger.warning(f"[CROSS_STREET] Ошибка goodFeaturesToTrack: {e}")
             return None
 
     @staticmethod
     def _ensure_binary_mask(mask: np.ndarray, shape_hw: tuple) -> np.ndarray:
-        """阈值化并调整尺寸到图像大小，返回二值 0/1 uint8"""
+        """Пороговая обработка и масштабирование до размера изображения, возвращает бинарную 0/1 uint8"""
         H, W = shape_hw
         if mask.dtype != np.uint8:
             mask = (mask > 0.5).astype(np.uint8)
@@ -354,20 +354,20 @@ class CrossStreetNavigator:
         return (mask > 0).astype(np.uint8)
 
     def _postprocess_mask(self, mask_bin: np.ndarray) -> np.ndarray:
-        """形态学净化 + 移除小碎片，缓解毛边与噪点"""
+        """Морфологическая очистка + удаление мелких фрагментов, сглаживание рваных краёв и шума"""
         try:
             m = (mask_bin > 0).astype(np.uint8)
             H, W = m.shape[:2]
-            # 轻度开闭操作，去毛刺并填补细小空洞
+            # Лёгкие операции открытия/закрытия: убрать заусенцы и заполнить мелкие дыры
             k_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
             k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
             m = cv2.morphologyEx(m, cv2.MORPH_OPEN, k_open, iterations=1)
             m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k_close, iterations=1)
-            # 移除过小连通域
+            # Удалить слишком маленькие связные области
             num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
             if num_labels > 1:
                 areas = stats[1:, cv2.CC_STAT_AREA]
-                keep_area = max(int(0.003 * H * W), 1500)  # 约 0.3% 画面或 1500 px
+                keep_area = max(int(0.003 * H * W), 1500)  # около 0.3% кадра или 1500 px
                 keep_labels = np.where(areas >= keep_area)[0] + 1
                 m2 = np.zeros_like(m)
                 for lbl in keep_labels:
@@ -387,7 +387,7 @@ class CrossStreetNavigator:
 
 
     def _mask_center(self, mask: np.ndarray):
-        """用图像矩计算掩码质心；失败返回 None"""
+        """Вычислить центроид маски по моментам изображения; при неудаче вернуть None"""
         M = cv2.moments((mask > 0).astype(np.uint8))
         if abs(M["m00"]) < 1e-6:
             return None
@@ -396,13 +396,13 @@ class CrossStreetNavigator:
         return (cx, cy)
     
     def _is_crosswalk_near(self, mask: np.ndarray, h: int, w: int) -> bool:
-        """判断斑马线是否"很近"（到用户跟前）- 更严格的判定条件"""
+        """Определить, «очень близко» ли пешеходный переход (прямо перед пользователем) — более строгие условия"""
         if mask is None:
             return False
         area = int(mask.sum())
         area_ratio = float(area) / float(h * w)
         
-        # 获取底部位置和高度
+        # Получить положение нижнего края и высоту
         ys = np.where(mask > 0)[0]
         if ys.size == 0:
             return False
@@ -412,17 +412,17 @@ class CrossStreetNavigator:
         height_ratio = float(mask_height) / float(h)
         bottom_ratio = float(bottom_y) / float(h)
         
-        # 需要同时满足多个条件（AND逻辑，更严格）：
-        # 1. 面积足够大
-        # 2. 底部位置足够低
-        # 3. 高度占比足够大（防止只是因为抬头导致的误判）
+        # Должны одновременно выполняться несколько условий (логика AND, строже):
+        # 1. Площадь достаточно большая
+        # 2. Нижний край достаточно низко
+        # 3. Доля высоты достаточно большая (защита от ложного срабатывания, когда пользователь просто поднял голову)
         is_near = (area_ratio >= CROSSWALK_NEAR_AREA_RATIO and 
                    bottom_ratio >= CROSSWALK_NEAR_BOTTOM_RATIO and
                    height_ratio >= CROSSWALK_NEAR_MIN_HEIGHT_RATIO)
         return is_near
     
     def _is_crosswalk_almost_done(self, mask: np.ndarray, h: int, w: int) -> bool:
-        """判断斑马线是否"快消失"（斑马线在画面底部且面积很小）- 更严格的判定"""
+        """Определить, «почти исчез» ли пешеходный переход (внизу кадра и с очень малой площадью) — более строгое условие"""
         if mask is None:
             return False
         area = int(mask.sum())
@@ -432,39 +432,39 @@ class CrossStreetNavigator:
         if ys.size == 0:
             return False
         
-        # 计算斑马线的顶部和底部位置
+        # Вычислить положение верхнего и нижнего краёв пешеходного перехода
         top_y = int(ys.min())
         bottom_y = int(ys.max())
         
         top_ratio = float(top_y) / float(h)
         bottom_ratio = float(bottom_y) / float(h)
         
-        # 更严格的判断条件（避免过早触发）：
-        # 1. 顶部已经过了画面70%（>0.7），说明斑马线主要在画面最下方
-        # 2. 底部接近画面底部（>0.85）
-        # 3. 面积很小（<0.08），说明快消失了
+        # Более строгие условия (чтобы избежать преждевременного срабатывания):
+        # 1. Верхний край уже ниже 70% кадра (>0.7) — переход в основном в самом низу кадра
+        # 2. Нижний край близок к низу кадра (>0.85)
+        # 3. Площадь очень мала (<0.08) — переход почти исчез
         is_almost_done = (top_ratio > 0.7 and bottom_ratio > 0.85 and area_ratio < 0.08)
         return is_almost_done
     
     def _compute_远_distance_alignment(self, mask: np.ndarray, h: int, w: int) -> tuple:
-        """计算远距离对准的角度和偏移（基于mask几何，不依赖条纹）"""
+        """Вычислить угол и смещение для выравнивания на дальней дистанции (по геометрии маски, без опоры на полосы)"""
         ys, xs = np.where(mask > 0)
         if xs.size < 50:
             return 0.0, 0.0
         
-        # 使用PCA计算主方向
+        # Вычислить главное направление через PCA
         pts = np.stack([xs.astype(np.float32), ys.astype(np.float32)], axis=1)
         mean = pts.mean(axis=0)
         cov = np.cov((pts - mean).T)
         eigvals, eigvecs = np.linalg.eig(cov)
         v = eigvecs[:, np.argmax(eigvals)]
         
-        # 计算角度（相对水平）
+        # Вычислить угол (относительно горизонтали)
         angle = np.degrees(np.arctan2(v[1], v[0]))
         if angle > 90: angle -= 180
         if angle < -90: angle += 180
         
-        # 计算水平偏移（质心相对画面中心）
+        # Вычислить горизонтальное смещение (центроид относительно центра кадра)
         cx = float(mean[0])
         offset = (cx - (w / 2.0)) / max(1.0, w / 2.0)
         
@@ -472,14 +472,14 @@ class CrossStreetNavigator:
 
     def _draw_line_vertical_angle(self, image, center, angle_deg, length_ratio=0.7, color=(255, 255, 0), thickness=3):
         """
-        以“竖直方向”为0°基准，angle_deg>0 表示左偏，<0 表示右偏。
-        在 center 处画一条通过点的直线。
+        За 0° принимается «вертикаль», angle_deg>0 — отклонение влево, <0 — вправо.
+        Рисует прямую, проходящую через точку center.
         """
         H, W = image.shape[:2]
         half_len = int(0.5 * length_ratio * min(H, W))
         rad = np.radians(angle_deg)
-        # 竖直基准: 向上的单位向量(0, -1)
-        # 旋转 angle 后的方向向量 = (sin, -cos)
+        # Вертикальная база: единичный вектор вверх (0, -1)
+        # Вектор направления после поворота на angle = (sin, -cos)
         vx = np.sin(rad);
         vy = -np.cos(rad)
         x0, y0 = center
@@ -489,7 +489,7 @@ class CrossStreetNavigator:
 
     def _draw_dashed_line_vertical_angle(self, image, center, angle_deg, length_ratio=0.7,
                                          dash=12, gap=8, color=(255, 255, 255), thickness=2):
-        """同样以竖直为0°，画 through center 的虚线。"""
+        """Так же с вертикалью за 0° рисует пунктир через center."""
         H, W = image.shape[:2]
         half_len = int(0.5 * length_ratio * min(H, W))
         rad = np.radians(angle_deg)
@@ -499,7 +499,7 @@ class CrossStreetNavigator:
         x1, y1 = int(x0 - vx * half_len), int(y0 - vy * half_len)
         x2, y2 = int(x0 + vx * half_len), int(y0 + vy * half_len)
 
-        # 沿整条线分段画虚线
+        # Рисовать пунктир отрезками вдоль всей линии
         total_len = int(np.hypot(x2 - x1, y2 - y1))
         if total_len <= 0: return
         dx = (x2 - x1) / total_len
@@ -514,24 +514,24 @@ class CrossStreetNavigator:
 
     def _offset_from_centerline(self, center_pt, angle_vertical_deg, width, height, y_ratio=0.75) -> float:
         """
-        基于“青色法线中央直线”计算左右偏移：
-        - angle_vertical_deg: 以“竖直方向为0°”的角（与 _draw_line_vertical_angle 相同坐标系）
-        - center_pt: 掩码质心 (cx, cy)
-        - y_ratio: 预瞄行高度（相对图像高度的比例），默认0.75（底部偏下更稳定）
-        返回：归一化偏移（右为正，左为负），与原 offset 含义一致。
+        Вычисляет смещение влево/вправо по «голубой центральной линии-нормали»:
+        - angle_vertical_deg: угол, где «вертикаль = 0°» (та же система координат, что в _draw_line_vertical_angle)
+        - center_pt: центроид маски (cx, cy)
+        - y_ratio: высота строки упреждения (доля высоты изображения), по умолчанию 0.75 (ниже — стабильнее)
+        Возвращает: нормированное смещение (вправо — положительное, влево — отрицательное), по смыслу совпадает с прежним offset.
         """
         if center_pt is None:
             return 0.0
         x0, y0 = center_pt
         rad = np.radians(angle_vertical_deg)
-        # 与 _draw_line_vertical_angle 完全一致的方向向量定义
+        # Определение вектора направления полностью совпадает с _draw_line_vertical_angle
         vx = np.sin(rad)
         vy = -np.cos(rad)
 
-        # 取预瞄行的 y
+        # Взять y строки упреждения
         y_target = float(int(height * y_ratio))
 
-        # 若法线几乎水平（极少出现），避免除0
+        # Если нормаль почти горизонтальна (бывает крайне редко), избегаем деления на 0
         if abs(vy) < 1e-6:
             x_at = float(x0)
         else:
@@ -539,29 +539,29 @@ class CrossStreetNavigator:
             x_at = float(x0) + t * vx
 
         x_at = float(np.clip(x_at, 0, width - 1))
-        # 与旧 offset 定义一致：相对画面中心的归一化水平偏移（右正左负）
+        # Как в старом определении offset: нормированное горизонтальное смещение относительно центра кадра (вправо +, влево −)
         return float((x_at - (width / 2.0)) / max(1.0, width / 2.0))
 
     def _compute_angle_and_offset(self, mask: np.ndarray) -> tuple:
-        """计算斑马线的角度和偏移（PCA 回退用）"""
+        """Вычислить угол и смещение пешеходного перехода (запасной вариант через PCA)"""
         H, W = mask.shape[:2]
         ys, xs = np.where(mask > 0)
         if xs.size < 50:
             return 0.0, 0.0
 
-        # 使用PCA计算主方向
+        # Вычислить главное направление через PCA
         pts = np.stack([xs.astype(np.float32), ys.astype(np.float32)], axis=1)
         mean = pts.mean(axis=0)
         cov = np.cov((pts - mean).T)
         eigvals, eigvecs = np.linalg.eig(cov)
         v = eigvecs[:, np.argmax(eigvals)]
 
-        # 计算角度
+        # Вычислить угол
         angle = np.degrees(np.arctan2(v[1], v[0]))
         if angle > 90: angle -= 180
         if angle < -90: angle += 180
 
-        # 计算水平偏移
+        # Вычислить горизонтальное смещение
         cx = float(mean[0])
         offset = (cx - (W / 2.0)) / max(1.0, W / 2.0)
 
@@ -569,26 +569,26 @@ class CrossStreetNavigator:
 
     def _estimate_angle_by_stripes(self, mask: np.ndarray, gray: np.ndarray) -> Optional[Dict[str, Any]]:
         """
-        基于掩码内条纹（霍夫线）估计角度和可视化（放宽参数 + 鲁棒聚类）:
-        返回 dict: {
-          'angle_deg': float,       # 相对竖直方向偏角（[-45,45]），正=左偏，负=右偏
-          'lines': List[(x1,y1,x2,y2)],  # 选中的条纹线段（图像坐标）
-          'confidence': float,      # [0,1] 加权圆均值合力强度
-          'count': int              # 线段数量
+        Оценка угла и визуализация по полосам внутри маски (линии Хафа) (ослабленные параметры + робастная кластеризация):
+        Возвращает dict: {
+          'angle_deg': float,       # угол отклонения от вертикали ([-45,45]), + = влево, − = вправо
+          'lines': List[(x1,y1,x2,y2)],  # выбранные отрезки полос (координаты изображения)
+          'confidence': float,      # [0,1] сила результирующего взвешенного кругового среднего
+          'count': int              # число отрезков
         }
         """
         try:
             H, W = mask.shape[:2]
-            roi_top = int(0.45 * H)  # 关注下半部分，稳定性更好
+            roi_top = int(0.45 * H)  # Смотрим на нижнюю половину — стабильнее
             m_roi = (mask[roi_top:H, :] > 0).astype(np.uint8)
             g_roi = gray[roi_top:H, :]
 
-            # 放宽边缘阈值
+            # Ослабленные пороги краёв
             g_blur = cv2.GaussianBlur(g_roi, (5, 5), 0)
             edges = cv2.Canny(g_blur, 50, 150)
             edges = cv2.bitwise_and(edges, edges, mask=m_roi * 255)
 
-            # 放宽霍夫参数
+            # Ослабленные параметры Хафа
             lines = cv2.HoughLinesP(
                 edges,
                 rho=1,
@@ -607,13 +607,13 @@ class CrossStreetNavigator:
                 length = float(np.hypot(dx, dy))
                 if length < 8:
                     continue
-                ang = float(np.degrees(np.arctan2(dy, dx)))  # 相对 x 轴
+                ang = float(np.degrees(np.arctan2(dy, dx)))  # относительно оси x
                 if ang > 90: ang -= 180
                 if ang < -90: ang += 180
-                # 放宽角度接受范围
+                # Расширенный допустимый диапазон углов
                 if abs(ang) > 65:
                     continue
-                # 底部越近权重越大
+                # Чем ближе к низу, тем больше вес
                 ymid = (y1 + y2) * 0.5 + roi_top
                 w = length * (0.5 + 0.5 * (ymid / max(1.0, H)))
                 angles.append(ang)
@@ -623,11 +623,11 @@ class CrossStreetNavigator:
             if len(angles) < 5:
                 return None
 
-            # 角度鲁棒聚类：加权中位数 + MAD 剔除离群
+            # Робастная кластеризация углов: взвешенная медиана + отсев выбросов по MAD
             angs = np.array(angles, dtype=np.float32)
             wts = np.array(weights, dtype=np.float32)
 
-            # 加权中位数
+            # Взвешенная медиана
             sort_idx = np.argsort(angs)
             angs_sorted = angs[sort_idx]
             wts_sorted = wts[sort_idx]
@@ -635,10 +635,10 @@ class CrossStreetNavigator:
             med_idx = np.searchsorted(cum, cum[-1] * 0.5)
             med = float(angs_sorted[min(max(med_idx, 0), len(angs_sorted) - 1)])
 
-            # MAD（围绕中位数的绝对偏差中位数），阈值更宽
+            # MAD (медиана абсолютных отклонений от медианы), порог шире
             dev = np.abs(angs - med)
             mad = float(np.median(dev) + 1e-6)
-            deg_thr = max(12.0, 2.8 * mad)  # 适度放宽
+            deg_thr = max(12.0, 2.8 * mad)  # умеренно ослаблено
             keep = dev <= deg_thr
 
             if keep.sum() >= 3:
@@ -650,7 +650,7 @@ class CrossStreetNavigator:
                 wts_keep = wts
                 lines_keep = all_lines
 
-            # 加权圆均值
+            # Взвешенное круговое среднее
             ang_rad = np.radians(angs_keep)
             C = float(np.sum(wts_keep * np.cos(ang_rad)))
             S = float(np.sum(wts_keep * np.sin(ang_rad)))
@@ -670,13 +670,13 @@ class CrossStreetNavigator:
             return None
 
     def _get_crosswalk_guidance_features(self, mask: np.ndarray, image_shape: tuple) -> dict:
-        """计算斑马线引导特征（鲁棒中心线 + 目标点 + 角度/偏移）"""
+        """Вычислить признаки навигации по пешеходному переходу (робастная центральная линия + целевая точка + угол/смещение)"""
         try:
             height, width = image_shape[:2]
             min_run_px = max(12, int(width * 0.02))
             centerline_rows = []
 
-            # 自底向上扫描，按最大连续区段取左右边界的中点，忽略零散噪点
+            # Сканирование снизу вверх: берём середину между левой и правой границами наибольшего непрерывного участка, игнорируя разрозненный шум
             for y in range(height - 1, int(height * 0.4), -5):
                 row = mask[y, :]
                 xs = np.where(row > 0)[0]
@@ -698,12 +698,12 @@ class CrossStreetNavigator:
             data = np.array(centerline_rows, dtype=np.float32)
             y_coords, x_coords = data[:, 0], data[:, 1]
 
-            # 初始加权（底部更重要）
+            # Начальные веса (низ важнее)
             w_base = y_coords / float(height)
             coeffs = np.polyfit(y_coords, x_coords, 2, w=w_base)
             poly = np.poly1d(coeffs)
 
-            # 一次鲁棒再加权（抑制弯折/异常点）
+            # Одно робастное перевзвешивание (подавление изломов/выбросов)
             res = x_coords - poly(y_coords)
             mad = np.median(np.abs(res - np.median(res))) + 1e-6
             c = 2.5 * mad
@@ -712,20 +712,20 @@ class CrossStreetNavigator:
             coeffs = np.polyfit(y_coords, x_coords, 2, w=w_total)
             poly = np.poly1d(coeffs)
 
-            # 目标点与绘制点
+            # Целевая точка и точки отрисовки
             lookahead_y = int(height * 0.6)
             target_x = float(poly(lookahead_y))
             plot_y = np.arange(int(height * 0.4), height, 5).astype(int)
             plot_x = poly(plot_y).astype(int)
             centerline_points = np.vstack((plot_x, plot_y)).T.tolist()
 
-            # 角度（基于 x(y) 的导数）与水平偏移
+            # Угол (по производной x(y)) и горизонтальное смещение
             dpoly = np.polyder(poly)
             dx_dy = float(dpoly(lookahead_y))
             angle_deg = float(np.degrees(np.arctan(dx_dy)))
             offset = float((target_x - (width / 2.0)) / max(1.0, width / 2.0))
 
-            # 截断目标点范围
+            # Ограничить диапазон целевой точки
             tx = int(np.clip(target_x, 0, width - 1))
             return {
                 "target_point": (tx, lookahead_y),
@@ -736,9 +736,9 @@ class CrossStreetNavigator:
         except Exception:
             return None
 
-    # —— 障碍物：光流辅助方法（与 blindpath 一致） ——
+    # —— Препятствия: вспомогательные методы оптического потока (как в blindpath) ——
     def _get_edge_mask(self, mask, offset=10):
-        """获取掩码的内边缘区域，用于特征点检测"""
+        """Получить внутреннюю краевую область маски для поиска особых точек"""
         if mask is None:
             return None
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (offset*2, offset*2))
@@ -749,7 +749,7 @@ class CrossStreetNavigator:
         return edge
 
     def _predict_mask_with_flow(self, prev_mask, prev_gray, curr_gray):
-        """使用 Lucas-Kanade 光流预测掩码位置（与 blindpath 一致）"""
+        """Предсказать положение маски оптическим потоком Лукаса — Канаде (как в blindpath)"""
         try:
             edge_mask = self._get_edge_mask(prev_mask, offset=10)
             p0 = cv2.goodFeaturesToTrack(prev_gray, mask=edge_mask, **FEATURE_PARAMS)
@@ -774,20 +774,20 @@ class CrossStreetNavigator:
         except Exception:
             return None
 
-    # —— 障碍物：检测与可视化（与 blindpath 一致） ——
+    # —— Препятствия: детекция и визуализация (как в blindpath) ——
     def _detect_obstacles(self, image, path_mask=None):
-        """检测障碍物，调用 ObstacleDetectorClient.detect（与 blindpath 同步）"""
-        logger.info(f"[_detect_obstacles] 开始执行，Frame={self.frame_counter}, obstacle_detector={'已加载' if self.obstacle_detector else '未加载'}")
+        """Детекция препятствий через ObstacleDetectorClient.detect (синхронно с blindpath)"""
+        logger.info(f"[_detect_obstacles] Запуск, Frame={self.frame_counter}, obstacle_detector={'загружен' if self.obstacle_detector else 'не загружен'}")
         if self.obstacle_detector is None:
-            logger.warning("[_detect_obstacles] 障碍物检测器未加载！")
+            logger.warning("[_detect_obstacles] Детектор препятствий не загружен!")
             return []
 
         try:
-            logger.info(f"[_detect_obstacles] 调用ObstacleDetectorClient.detect()... image.shape={image.shape}")
+            logger.info(f"[_detect_obstacles] Вызов ObstacleDetectorClient.detect()... image.shape={image.shape}")
             detected_obstacles = self.obstacle_detector.detect(image, path_mask=path_mask)
-            logger.info(f"[_detect_obstacles] 返回 {len(detected_obstacles)} 个物体")
+            logger.info(f"[_detect_obstacles] Возвращено объектов: {len(detected_obstacles)}")
 
-            # 补充派生字段
+            # Дополнить производные поля
             H, W = image.shape[:2]
             for i, obj in enumerate(detected_obstacles):
                 if 'mask' in obj and obj['mask'] is not None:
@@ -806,11 +806,11 @@ class CrossStreetNavigator:
                             obj['confidence'] = 0.5
             return detected_obstacles
         except Exception as e:
-            logger.error(f"[_detect_obstacles] 障碍物检测失败: {e}", exc_info=True)
+            logger.error(f"[_detect_obstacles] Ошибка детекции препятствий: {e}", exc_info=True)
             return []
 
     def _stabilize_obstacle_list(self, obstacles, prev_obstacles, prev_gray, curr_gray, image_shape, threshold=0.5):
-        """稳定障碍物检测结果，避免重复叠加（与 blindpath 一致）"""
+        """Стабилизировать результаты детекции препятствий, избегая повторного наложения (как в blindpath)"""
         if not obstacles or prev_gray is None or curr_gray is None:
             return obstacles
 
@@ -850,7 +850,7 @@ class CrossStreetNavigator:
         return stabilized
 
     def _update_obstacle_properties(self, obs, H, W):
-        """更新障碍物的派生属性"""
+        """Обновить производные атрибуты препятствий"""
         if 'mask' not in obs or obs['mask'] is None:
             return
         mask = obs['mask']
@@ -866,9 +866,9 @@ class CrossStreetNavigator:
             x2, y2 = int(np.max(x_coords)), int(np.max(y_coords))
             obs['box_coords'] = (x1, y1, x2, y2)
 
-    # —— 可视化通用方法（与 blindpath 一致） ——
+    # —— Общие методы визуализации (как в blindpath) ——
     def _parse_color(self, color_str):
-        """解析颜色字符串，返回BGR格式"""
+        """Разобрать строку цвета, вернуть в формате BGR"""
         try:
             if isinstance(color_str, tuple) and len(color_str) == 3:
                 return color_str
@@ -886,7 +886,7 @@ class CrossStreetNavigator:
             return (0, 0, 255)
 
     def _add_obstacle_visualization(self, obstacle, visualizations, pulse_effect=False):
-        """添加障碍物可视化（简化版：仅边框，近红远黄）"""
+        """Добавить визуализацию препятствий (упрощённо: только рамка, близкие — красные, дальние — жёлтые)"""
         try:
             bottom_y_ratio = obstacle.get('bottom_y_ratio', 0)
             area_ratio = obstacle.get('area_ratio', 0)
@@ -899,15 +899,15 @@ class CrossStreetNavigator:
                     max_contour = max(contours, key=cv2.contourArea)
                     points = max_contour.squeeze(1)[::5].tolist()
                     
-                    # 根据距离选择边框颜色：近距离红色，远距离黄色
+                    # Цвет рамки по расстоянию: близко — красный, далеко — жёлтый
                     if is_near:
-                        outline_color = "rgba(255, 0, 0, 1.0)"  # 红色
+                        outline_color = "rgba(255, 0, 0, 1.0)"  # красный
                         thickness = 3
                     else:
-                        outline_color = "rgba(255, 255, 0, 0.8)"  # 黄色
+                        outline_color = "rgba(255, 255, 0, 0.8)"  # жёлтый
                         thickness = 2
 
-                    # 只添加边框，不添加填充和文字
+                    # Только рамка, без заливки и текста
                     visualizations.append({
                         "type": "outline",
                         "points": points,
@@ -915,24 +915,24 @@ class CrossStreetNavigator:
                         "thickness": thickness
                     })
         except Exception as e:
-            logger.error(f"[_add_obstacle_visualization] 添加障碍物可视化失败: {e}")
+            logger.error(f"[_add_obstacle_visualization] Не удалось добавить визуализацию препятствий: {e}")
 
     def _draw_command_button(self, image, text):
-        """绘制底部中央的指令按钮（类似yolomedia风格）"""
+        """Нарисовать кнопку команды внизу по центру (в стиле yolomedia)"""
         try:
             H, W = image.shape[:2]
             full_text = f"当前指令：{text if text else '—'}"
             
-            # 按钮参数
+            # Параметры кнопки
             font_px = 14
             pad_x, pad_y = 14, 8
             bottom_margin = 28
             
-            # 计算文字尺寸
+            # Вычислить размер текста
             if PIL_AVAILABLE:
                 try:
                     from PIL import Image as PILImage, ImageDraw, ImageFont
-                    # 尝试加载中文字体
+                    # Попытаться загрузить китайский шрифт
                     font = None
                     for font_path in ["C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf"]:
                         if os.path.exists(font_path):
@@ -955,7 +955,7 @@ class CrossStreetNavigator:
                 scale = font_px / 24.0
                 (tw, th), _ = cv2.getTextSize(full_text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
             
-            # 计算按钮位置（底部居中）
+            # Вычислить положение кнопки (внизу по центру)
             bw = tw + pad_x * 2
             bh = th + pad_y * 2
             radius = max(10, bh // 2)
@@ -966,46 +966,46 @@ class CrossStreetNavigator:
             right = min(W - 8, left + bw)
             bottom = top + bh
             
-            # 绘制半透明圆角背景
+            # Нарисовать полупрозрачный фон со скруглёнными углами
             overlay = image.copy()
-            bg_color = (26, 32, 41)  # 深色背景
-            border_color = (60, 76, 102)  # 边框
+            bg_color = (26, 32, 41)  # тёмный фон
+            border_color = (60, 76, 102)  # рамка
             
-            # 圆角矩形（中间+两个圆）
+            # Скруглённый прямоугольник (середина + два круга)
             cv2.rectangle(overlay, (left + radius, top), (right - radius, bottom), bg_color, -1)
             cv2.circle(overlay, (left + radius, (top + bottom) // 2), radius, bg_color, -1)
             cv2.circle(overlay, (right - radius, (top + bottom) // 2), radius, bg_color, -1)
             
-            # 混合半透明
+            # Полупрозрачное смешивание
             cv2.addWeighted(overlay, 0.75, image, 0.25, 0, image)
             
-            # 绘制边框
+            # Нарисовать рамку
             cv2.rectangle(image, (left + radius, top), (right - radius, bottom), border_color, 1)
             cv2.circle(image, (left + radius, (top + bottom) // 2), radius, border_color, 1)
             cv2.circle(image, (right - radius, (top + bottom) // 2), radius, border_color, 1)
             
-            # 绘制文字
+            # Нарисовать текст
             text_x = left + pad_x
             text_y = top + pad_y + th
             
             if PIL_AVAILABLE and font:
-                # 使用PIL绘制中文
+                # Рисуем китайский текст через PIL
                 pil_img = PILImage.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
                 draw = ImageDraw.Draw(pil_img)
                 draw.text((text_x, top + pad_y), full_text, font=font, fill=(255, 255, 255))
                 image = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
             else:
-                # 使用OpenCV绘制
+                # Рисуем через OpenCV
                 cv2.putText(image, full_text, (text_x, text_y), 
                            cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), 1)
             
             return image
         except Exception as e:
-            logger.error(f"绘制指令按钮失败: {e}")
+            logger.error(f"Не удалось нарисовать кнопку команды: {e}")
             return image
     
     def _draw_data_panel_no_bg(self, image, data, position=(15, 15)):
-        """绘制数据面板（无黑底，描边文字），与 blindpath 一致"""
+        """Нарисовать панель данных (без чёрного фона, текст с обводкой), как в blindpath"""
         if not PIL_AVAILABLE:
             return image
         try:
@@ -1043,18 +1043,18 @@ class CrossStreetNavigator:
                 y_offset += base_font_size + 5
             return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
         except Exception as e:
-            logger.warning(f"绘制数据面板失败: {e}")
+            logger.warning(f"Не удалось нарисовать панель данных: {e}")
             return image
 
     def _draw_visualizations(self, image, viz_elements):
-        """增强的可视化绘制方法（与 blindpath 一致）"""
+        """Расширенный метод отрисовки визуализаций (как в blindpath)"""
         if not viz_elements:
             return image
         current_time = time.time()
         panel_elements = [v for v in viz_elements if v.get("type") == "data_panel"]
         standard_elements = [v for v in viz_elements if v.get("type") != "data_panel"]
 
-        # 第一遍：半透明填充
+        # Первый проход: полупрозрачная заливка
         for element in standard_elements:
             elem_type = element.get("type")
             if elem_type in ['blind_path_mask', 'obstacle_mask', 'crosswalk_mask']:
@@ -1085,7 +1085,7 @@ class CrossStreetNavigator:
                             )
                         image[y:y+h, x:x+w] = local_region
 
-        # 第二遍：轮廓和元素
+        # Второй проход: контуры и элементы
         for element in standard_elements:
             elem_type = element.get("type")
             if elem_type == 'outline':
@@ -1165,7 +1165,7 @@ class CrossStreetNavigator:
                 pos = tuple(element.get("pos", (10, 30)))
                 cv2.putText(image, text, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-        # 数据面板
+        # Панель данных
         if PIL_AVAILABLE:
             for panel in panel_elements:
                 image = self._draw_data_panel_no_bg(image, panel["data"], panel["position"])
@@ -1185,7 +1185,7 @@ class CrossStreetNavigator:
         return image
 
     def _speech_for_obstacle(self, name: str) -> str:
-        """生成障碍物语音提示"""
+        """Сформировать голосовую подсказку о препятствии"""
         k = (name or '').strip().lower()
         if k == 'person': return "前方有人，注意避让。"
         if k == 'car': return "前方有车，注意避让。"
@@ -1200,7 +1200,7 @@ class CrossStreetNavigator:
         return "前方有障碍物，注意避让。"
 
     def process_frame(self, bgr_image: np.ndarray) -> CrossStreetResult:
-        """处理单帧图像（每帧分割；若失败，用光流追踪上一帧掩码保持可视化与导航）"""
+        """Обработать один кадр (сегментация на каждом кадре; при неудаче — трекинг маски предыдущего кадра оптическим потоком для сохранения визуализации и навигации)"""
         self.frame_counter += 1
         current_time = time.time()
 
@@ -1209,22 +1209,22 @@ class CrossStreetNavigator:
             h, w = bgr_image.shape[:2]
             frame_visualizations = []
 
-            # 当前灰度图供 LK 与避障稳定使用
+            # Текущее полутоновое изображение для LK и стабилизации обхода препятствий
             gray = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2GRAY)
 
-            # ========== 1) 间隔执行分割（每4帧检测一次） ==========
+            # ========== 1) Сегментация с интервалом (детекция раз в 4 кадра) ==========
             crosswalk_mask = None
             blindpath_mask = None
             det_area = 0
 
-            # 【新增】检测间隔逻辑
+            # 【Новое】Логика интервала детекции
             if self.seg_model and self.frame_counter % self.CROSSWALK_DETECTION_INTERVAL == 0:
-                # 执行新的检测
-                # 使用较低的基础阈值获取所有候选
+                # Выполнить новую детекцию
+                # Получить всех кандидатов с пониженным базовым порогом
                 base_thr = min(CROSSWALK_MIN_CONF, BLIND_MIN_CONF)
                 detections = self.seg_model.detect(bgr_image, confidence_threshold=base_thr) or []
                 
-                # 按类别ID和名称分拣
+                # Разобрать по ID класса и имени
                 raw_cw, raw_bp = [], []
                 for det in detections:
                     if not hasattr(det, 'mask') or det.mask is None:
@@ -1233,18 +1233,18 @@ class CrossStreetNavigator:
                     cid = _cls_of(det)
                     name = str(getattr(det, "name", "")).lower()
                     
-                    # 斑马线：ID匹配或名称匹配
+                    # Пешеходный переход: совпадение по ID или по имени
                     if (cid == CW_ID) or _in_set(name, _CW):
                         raw_cw.append(det)
-                    # 盲道：ID匹配或名称匹配
+                    # Тактильная дорожка: совпадение по ID или по имени
                     elif (cid == BP_ID) or _in_set(name, _BP):
                         raw_bp.append(det)
                 
-                # 二次阈值过滤
+                # Вторичная пороговая фильтрация
                 cw_list = [d for d in raw_cw if _score_of(d) >= CROSSWALK_MIN_CONF]
                 bp_list = [d for d in raw_bp if _score_of(d) >= BLIND_MIN_CONF]
                 
-                # 合并斑马线mask
+                # Объединить маски пешеходного перехода
                 if cw_list:
                     cw_masks = []
                     for det in cw_list:
@@ -1260,7 +1260,7 @@ class CrossStreetNavigator:
                             crosswalk_mask = None
                             det_area = 0
                 
-                # 合并盲道mask
+                # Объединить маски тактильной дорожки
                 if bp_list:
                     bp_masks = []
                     for det in bp_list:
@@ -1272,27 +1272,27 @@ class CrossStreetNavigator:
                     if bp_masks:
                         blindpath_mask = np.maximum.reduce(bp_masks)
                 
-                # 去交叠：从斑马线mask中移除盲道区域
+                # Устранение перекрытия: убрать область тактильной дорожки из маски перехода
                 if crosswalk_mask is not None and blindpath_mask is not None:
                     crosswalk_mask = crosswalk_mask.copy()
                     crosswalk_mask[blindpath_mask > 0] = 0
                 
-                # 盲道真伪判定
+                # Проверка подлинности тактильной дорожки
                 if blindpath_mask is not None:
                     if not _looks_like_blind_path(blindpath_mask, crosswalk_mask, h, w):
                         blindpath_mask = None
                 
-                # 【新增】保存检测结果到缓存
+                # 【Новое】Сохранить результаты детекции в кэш
                 self.last_detected_crosswalk_mask = crosswalk_mask
                 self.last_detected_blindpath_mask = blindpath_mask
                 self.last_crosswalk_detection_frame = self.frame_counter
             
             else:
-                # 【新增】使用缓存的检测结果
+                # 【Новое】Использовать кэшированные результаты детекции
                 crosswalk_mask = self.last_detected_crosswalk_mask
                 blindpath_mask = self.last_detected_blindpath_mask
 
-            # ========== 2) 分割失败 → 用上一帧特征点光流追踪重建 ==========
+            # ========== 2) Сегментация не удалась → восстановление трекингом особых точек предыдущего кадра оптическим потоком ==========
             used_tracking = False
             if crosswalk_mask is None:
                 if self.old_gray is not None and self.p0 is not None and len(self.p0) >= TRACK_MIN_POINTS:
@@ -1310,11 +1310,11 @@ class CrossStreetNavigator:
                                     self.p0 = None
                                     self.old_gray = None
                     except Exception as e:
-                        logger.warning(f"[CROSS_STREET] LK 光流失败: {e}")
+                        logger.warning(f"[CROSS_STREET] Ошибка оптического потока LK: {e}")
                         self.p0 = None
                         self.old_gray = None
 
-            # ========== 3) EMA 平滑（减少抖动） + 形态学净化 ==========
+            # ========== 3) EMA-сглаживание (меньше дрожания) + морфологическая очистка ==========
             if crosswalk_mask is not None:
                 m = crosswalk_mask.astype(np.float32)
                 if self.prev_mask_float is not None and self.prev_mask_float.shape == m.shape:
@@ -1326,7 +1326,7 @@ class CrossStreetNavigator:
                 self.prev_mask = crosswalk_mask
                 self.prev_mask_ts = current_time
 
-            # ========== 4) 若分割成功（或追踪成功）→ 播种/更新特征点 ==========
+            # ========== 4) Если сегментация (или трекинг) успешна → расставить/обновить особые точки ==========
             if crosswalk_mask is not None:
                 need_seed = (self.p0 is None or len(self.p0) < TRACK_MIN_POINTS or
                              (self.frame_counter - self.last_seed_frame) >= TRACK_RESEED_EVERY)
@@ -1343,13 +1343,13 @@ class CrossStreetNavigator:
                 self.p0 = None
                 self.old_gray = None
 
-            # ========== 4.5) 障碍物检测与可视化（与 blindpath 一致） ==========
-            # 使用 crosswalk_mask 作为 path_mask，若无则全局检测
+            # ========== 4.5) Детекция и визуализация препятствий (как в blindpath) ==========
+            # Использовать crosswalk_mask как path_mask, если её нет — детекция по всему кадру
             detected_obstacles = []
             if self.obstacle_detector is not None:
                 if self.frame_counter % self.OBSTACLE_DETECTION_INTERVAL == 0:
                     detected_obstacles = self._detect_obstacles(bgr_image, path_mask=crosswalk_mask)
-                    # 稳定化
+                    # Стабилизация
                     if self.prev_gray is not None:
                         detected_obstacles = self._stabilize_obstacle_list(
                             detected_obstacles,
@@ -1365,37 +1365,37 @@ class CrossStreetNavigator:
                         detected_obstacles = self.last_detected_obstacles
                     else:
                         detected_obstacles = []
-                # 可视化所有障碍物
+                # Визуализировать все препятствия
                 for obs in detected_obstacles:
                     self._add_obstacle_visualization(obs, frame_visualizations)
 
-            # ========== 5) 状态机 + 可视化与导航指令 ==========
+            # ========== 5) Конечный автомат + визуализация и навигационные команды ==========
             guidance_text = ""
             
-            # 先绘制盲道（绿色mask，无黑底）
+            # Сначала рисуем тактильную дорожку (зелёная маска, без чёрного фона)
             if blindpath_mask is not None:
-                # 只在掩码区域混合绿色，避免黑底
+                # Смешиваем зелёный только в области маски, чтобы не было чёрного фона
                 mask_area = (blindpath_mask > 0).astype(bool)
                 green_color = np.array([0, 255, 0], dtype=np.float32)  # BGR
-                # 在掩码区域内混合颜色
+                # Смешиваем цвет внутри области маски
                 for c in range(3):
                     annotated[:, :, c] = np.where(
                         mask_area,
                         (annotated[:, :, c] * 0.7 + green_color[c] * 0.3).astype(np.uint8),
                         annotated[:, :, c]
                     )
-                # 绘制盲道边框
+                # Нарисовать контур тактильной дорожки
                 bp_ct = self._largest_contour(blindpath_mask)
                 if bp_ct is not None:
                     cv2.drawContours(annotated, [bp_ct], -1, (0, 255, 0), 2)
             
-            # 绘制斑马线（橙色mask，无描边，与盲道模式颜色一致）
+            # Нарисовать пешеходный переход (оранжевая маска, без обводки, цвет как в режиме тактильной дорожки)
             if crosswalk_mask is not None:
                 self.crosswalk_detected = True
-                # 使用与盲道模式相同的橙色：BGR(0, 165, 255)，只在掩码区域混合
+                # Тот же оранжевый, что в режиме тактильной дорожки: BGR(0, 165, 255), смешивание только в области маски
                 mask_area = (crosswalk_mask > 0).astype(bool)
                 orange_color = np.array([0, 165, 255], dtype=np.float32)  # BGR
-                # 在掩码区域内混合颜色
+                # Смешиваем цвет внутри области маски
                 for c in range(3):
                     annotated[:, :, c] = np.where(
                         mask_area,
@@ -1403,22 +1403,22 @@ class CrossStreetNavigator:
                         annotated[:, :, c]
                     )
             
-            # ===== 状态机逻辑 =====
+            # ===== Логика конечного автомата =====
             if self.state == STATE_SEEKING:
-                # 阶段1：寻找并对准远处的斑马线
+                # Этап 1: поиск и выравнивание по удалённому пешеходному переходу
                 if crosswalk_mask is not None:
                     is_near = self._is_crosswalk_near(crosswalk_mask, h, w)
                     
                     if is_near:
-                        # 斑马线已到跟前，切换到红绿灯判定
+                        # Пешеходный переход уже рядом — переходим к определению сигнала светофора
                         self.state = STATE_WAIT_LIGHT
                         guidance_text = "斑马线已在跟前，进入红绿灯判定模式"
-                        self.last_seeking_guidance = ""  # 重置节流状态
+                        self.last_seeking_guidance = ""  # Сбросить состояние ограничения частоты
                     else:
-                        # 远距离对准引导（使用更宽松的阈值）
+                        # Подсказки выравнивания на дальней дистанции (с более мягкими порогами)
                         angle, offset = self._compute_远_distance_alignment(crosswalk_mask, h, w)
                         
-                        # 优先角度，其次方位（使用SEEKING专用的宽松阈值）
+                        # Сначала угол, затем положение (мягкие пороги, специально для SEEKING)
                         if abs(angle) >= SEEKING_ANGLE_THRESH_DEG:
                             direction = "左转一点" if angle > 0 else "右转一点"
                         elif abs(offset) >= SEEKING_OFFSET_THRESH:
@@ -1426,8 +1426,8 @@ class CrossStreetNavigator:
                         else:
                             direction = "保持直行"
                         
-                        # 【移除左上角文字，改为右上角数据面板】
-                        # 添加右上角数据面板
+                        # 【Текст в левом верхнем углу убран, вместо него панель данных в правом верхнем углу】
+                        # Добавить панель данных в правом верхнем углу
                         frame_visualizations.append({
                             "type": "data_panel",
                             "data": {
@@ -1438,16 +1438,16 @@ class CrossStreetNavigator:
                             "position": (w - 180, 20)
                         })
                         
-                        # 节流：只有当引导文本改变或超过时间间隔时才播报
+                        # Ограничение частоты: озвучивать только при смене текста подсказки или по истечении интервала
                         if current_time - self.last_guide_time > self.guide_interval:
                             if direction != self.last_seeking_guidance:
                                 guidance_text = direction
                                 self.last_seeking_guidance = direction
                             elif current_time - self.last_guide_time > self.guide_interval * 2:
-                                # 超过2倍间隔，重复播报
+                                # Прошло более 2 интервалов — повторное озвучивание
                                 guidance_text = direction
                 else:
-                    # 【移除左上角文字，改为右上角数据面板】
+                    # 【Текст в левом верхнем углу убран, вместо него панель данных в правом верхнем углу】
                     frame_visualizations.append({
                         "type": "data_panel",
                         "data": {
@@ -1455,22 +1455,22 @@ class CrossStreetNavigator:
                         },
                         "position": (w - 180, 20)
                     })
-                    self.last_seeking_guidance = ""  # 没有斑马线时重置
+                    self.last_seeking_guidance = ""  # Сброс, когда пешеходного перехода нет
             
             elif self.state == STATE_WAIT_LIGHT:
-                # 阶段2：红绿灯判定
-                # 【移除左上角文字，稍后添加右上角数据面板】
+                # Этап 2: определение сигнала светофора
+                # 【Текст в левом верхнем углу убран, панель данных в правом верхнем углу добавляется позже】
                 
                 if TRAFFIC_LIGHT_AVAILABLE and trafficlight_detection:
                     try:
-                        # 传入annotated（已包含斑马线和盲道），红绿灯检测在此基础上添加检测框
+                        # Передаём annotated (уже с переходом и тактильной дорожкой), детекция светофора добавляет поверх рамки
                         result = trafficlight_detection.process_single_frame(annotated)
                         
-                        # 可视化红绿灯检测结果（绘制检测框）
+                        # Визуализировать результаты детекции светофора (нарисовать рамки)
                         if result and 'vis_image' in result:
                             vis_img = result['vis_image']
                             if vis_img is not None:
-                                # 将红绿灯检测的可视化结果（带斑马线、盲道和检测框）更新到annotated
+                                # Записать в annotated визуализацию детекции светофора (с переходом, тактильной дорожкой и рамками)
                                 annotated = vis_img
                         
                         if result and 'stable_light' in result:
@@ -1478,7 +1478,7 @@ class CrossStreetNavigator:
                             
                             if stable_light == 'go':
                                 self.green_light_counter += 1
-                                # 【移除左上角文字，改为右上角数据面板】
+                                # 【Текст в левом верхнем углу убран, вместо него панель данных в правом верхнем углу】
                                 frame_visualizations.append({
                                     "type": "data_panel",
                                     "data": {
@@ -1492,18 +1492,18 @@ class CrossStreetNavigator:
                                     self.state = STATE_CROSSING
                                     guidance_text = "绿灯稳定，开始通行。"
                                     self.green_light_counter = 0
-                                    self.crossing_end_announced = False      # 重置过马路结束标志
-                                    self.last_crosswalk_seen_time = current_time  # 初始化斑马线检测时间
-                                    self.last_blindpath_announce_time = 0    # 重置盲道播报时间
+                                    self.crossing_end_announced = False      # Сбросить флаг завершения перехода
+                                    self.last_crosswalk_seen_time = current_time  # Инициализировать время детекции пешеходного перехода
+                                    self.last_blindpath_announce_time = 0    # Сбросить время озвучивания тактильной дорожки
                                 else:
-                                    # 检测到绿灯但还不稳定，节流播报
+                                    # Зелёный обнаружен, но ещё нестабилен — озвучивание с ограничением частоты
                                     if current_time - self.last_waiting_light_time > 3.0:
                                         guidance_text = "正在等待绿灯…"
                                         self.last_waiting_light_time = current_time
                             else:
                                 self.green_light_counter = 0
                                 if stable_light in ['stop', 'countdown_stop']:
-                                    # 【移除左上角文字，改为右上角数据面板】
+                                    # 【Текст в левом верхнем углу убран, вместо него панель данных в правом верхнем углу】
                                     frame_visualizations.append({
                                         "type": "data_panel",
                                         "data": {
@@ -1512,28 +1512,28 @@ class CrossStreetNavigator:
                                         },
                                         "position": (w - 180, 20)
                                     })
-                                    # 红灯状态播报（节流）
+                                    # Озвучивание красного сигнала (с ограничением частоты)
                                     if current_time - self.last_waiting_light_time > 3.0:
                                         guidance_text = "正在等待绿灯…"
                                         self.last_waiting_light_time = current_time
                                 else:
-                                    # 其他状态（黄灯或未检测到），节流播报
+                                    # Прочие состояния (жёлтый или не обнаружен) — озвучивание с ограничением частоты
                                     if current_time - self.last_waiting_light_time > 3.0:
                                         guidance_text = "正在等待绿灯…"
                                         self.last_waiting_light_time = current_time
                         else:
-                            # 没有检测到稳定的红绿灯，节流播报
+                            # Стабильный светофор не обнаружен — озвучивание с ограничением частоты
                             if current_time - self.last_waiting_light_time > 3.0:
                                 guidance_text = "正在等待绿灯…"
                                 self.last_waiting_light_time = current_time
                     except Exception as e:
-                        logger.warning(f"[CROSS_STREET] 红绿灯检测失败: {e}")
+                        logger.warning(f"[CROSS_STREET] Ошибка детекции светофора: {e}")
                         if current_time - self.last_waiting_light_time > 3.0:
                             guidance_text = "正在等待绿灯…"
                             self.last_waiting_light_time = current_time
                 else:
-                    # 无红绿灯模块，直接切换
-                    # 【移除左上角文字，改为右上角数据面板】
+                    # Модуля светофора нет — переключаемся сразу
+                    # 【Текст в левом верхнем углу убран, вместо него панель данных в правом верхнем углу】
                     frame_visualizations.append({
                         "type": "data_panel",
                         "data": {
@@ -1545,51 +1545,51 @@ class CrossStreetNavigator:
                     if current_time - self.last_guide_time > 2.0:
                         self.state = STATE_CROSSING
                         guidance_text = "开始通行"
-                        self.crossing_end_announced = False          # 重置过马路结束标志
-                        self.last_crosswalk_seen_time = current_time # 初始化斑马线检测时间
-                        self.last_blindpath_announce_time = 0        # 重置盲道播报时间
+                        self.crossing_end_announced = False          # Сбросить флаг завершения перехода
+                        self.last_crosswalk_seen_time = current_time # Инициализировать время детекции пешеходного перехода
+                        self.last_blindpath_announce_time = 0        # Сбросить время озвучивания тактильной дорожки
             
             elif self.state == STATE_CROSSING:
-                # 阶段3：过马路引导（原有逻辑）
+                # Этап 3: подсказки при переходе дороги (исходная логика)
                 
-                # 【新增】实时红绿灯检测（在CROSSING状态中）
-                traffic_light_warning = None  # 用于存储红绿灯警告信息
+                # 【Новое】Детекция светофора в реальном времени (в состоянии CROSSING)
+                traffic_light_warning = None  # Для хранения предупреждения о светофоре
                 if TRAFFIC_LIGHT_AVAILABLE and trafficlight_detection:
                     try:
-                        # 传入annotated（已包含斑马线和盲道），红绿灯检测在此基础上添加检测框
+                        # Передаём annotated (уже с переходом и тактильной дорожкой), детекция светофора добавляет поверх рамки
                         result = trafficlight_detection.process_single_frame(annotated)
                         
-                        # 将红绿灯检测的可视化结果（带斑马线、盲道和检测框）更新到annotated
+                        # Записать в annotated визуализацию детекции светофора (с переходом, тактильной дорожкой и рамками)
                         if result and 'vis_image' in result:
                             vis_img = result['vis_image']
                             if vis_img is not None:
-                                # 将红绿灯检测框叠加到annotated上（保留斑马线和盲道）
+                                # Наложить рамки детекции светофора на annotated (сохраняя переход и тактильную дорожку)
                                 annotated = vis_img
                         
-                        # 检查稳定状态，如果是绿灯倒计时，播报警告
+                        # Проверить стабильное состояние; если идёт обратный отсчёт зелёного — озвучить предупреждение
                         if result and 'stable_light' in result:
                             stable_light = result['stable_light']
                             if stable_light == 'countdown_go':
-                                # 绿灯倒计时，播报警告（节流）
+                                # Обратный отсчёт зелёного — озвучить предупреждение (с ограничением частоты)
                                 if current_time - self.last_guide_time > 2.0:
                                     traffic_light_warning = "绿灯快没了"
                     except Exception as e:
-                        logger.warning(f"[CROSS_STREET] CROSSING状态红绿灯检测失败: {e}")
+                        logger.warning(f"[CROSS_STREET] Ошибка детекции светофора в состоянии CROSSING: {e}")
                 
                 if crosswalk_mask is not None:
-                    # 更新斑马线检测时间
+                    # Обновить время детекции пешеходного перехода
                     self.last_crosswalk_seen_time = current_time
                     
-                    # 检测到斑马线：如果之前误播报了结束，现在重置标志回到正常流程
+                    # Пешеходный переход обнаружен: если ранее ошибочно озвучено завершение — сбросить флаг и вернуться к обычному процессу
                     area = int(crosswalk_mask.sum())
                     area_ratio = float(area) / float(h * w)
-                    # 如果斑马线面积还比较大（>0.1），说明还在过马路中，重置结束标志
+                    # Если площадь перехода ещё довольно большая (>0.1), переход продолжается — сбросить флаг завершения
                     if area_ratio > 0.1 and self.crossing_end_announced:
                         self.crossing_end_announced = False
                         self.blindpath_announced = False
-                        logger.info("[CROSS_STREET] 检测到斑马线，重置结束标志，回到正常过马路流程")
+                        logger.info("[CROSS_STREET] Обнаружен пешеходный переход, флаг завершения сброшен, возврат к обычному процессу перехода")
                     
-                    # 【移除左上角文字，改为右上角数据面板】
+                    # 【Текст в левом верхнем углу убран, вместо него панель данных в правом верхнем углу】
                     panel_data = {
                         "状态": "正在过马路",
                         "面积": f"{area_ratio:.2f}"
@@ -1602,17 +1602,17 @@ class CrossStreetNavigator:
                         "position": (w - 180, 20)
                     })
                     
-                    # 使用"斑马线横纹法线的中央直线"来推导偏移（offset 初值仍给 0，后面根据青色法线更新）
+                    # Смещение выводится по «центральной линии-нормали к поперечным полосам перехода» (offset изначально 0, затем обновляется по голубой нормали)
                     angle_deg, offset = 0.0, 0.0
 
-                    # 角度：优先使用条纹霍夫线估计；失败回退 PCA
+                    # Угол: сначала оценка по линиям Хафа на полосах; при неудаче — запасной вариант PCA
                     angle_source = "条纹"
                     stripes = self._estimate_angle_by_stripes(crosswalk_mask, gray)
                     if stripes and ("angle_deg" in stripes):
                         angle_deg = -float(stripes["angle_deg"])
                         for (x1, y1, x2, y2) in stripes.get("lines", []):
                             cv2.line(annotated, (x1, y1), (x2, y2), VIS_COLORS["stripes"], 2)
-                        # 可视化方向箭头（底部中心，表示偏角相对竖直）
+                        # Визуализировать стрелку направления (внизу по центру, отклонение от вертикали)
                         cx, cy = int(w * 0.5), int(h * 0.85)
                         length = int(60)
                         rad = np.radians(angle_deg)
@@ -1624,39 +1624,39 @@ class CrossStreetNavigator:
                         angle_deg, _ = self._compute_angle_and_offset(crosswalk_mask)
 
 
-                    # === 基于掩码质心 + 条纹法线，绘制"青色法线中央直线" & "白色虚线（与红箭头同向）" ===
-                    # === 过中心的两条参考线：青色=法线、白色虚线=与红箭头同向 ===
+                    # === По центроиду маски + нормали к полосам рисуем «голубую центральную линию-нормаль» и «белый пунктир (сонаправлен с красной стрелкой)» ===
+                    # === Две опорные линии через центр: голубая = нормаль, белый пунктир = сонаправлен с красной стрелкой ===
                     center_pt = self._mask_center(crosswalk_mask)
                     if center_pt is not None and stripes and ("angle_deg" in stripes):
-                        # 1) 青色法线：使用"条纹均值角"作为【法线相对竖直】角，保证与橙色条纹垂直
-                        angle_blue = float(stripes["angle_deg"])  # ← 关键：不要再取负，不要再加减 90°
+                        # 1) Голубая нормаль: «средний угол полос» берётся как 【угол нормали относительно вертикали】, гарантируя перпендикулярность оранжевым полосам
+                        angle_blue = float(stripes["angle_deg"])  # ← Важно: не менять знак и не прибавлять/вычитать 90°
                         self._draw_line_vertical_angle(annotated, center_pt, angle_blue,
                                                        length_ratio=0.7,
                                                        color=VIS_COLORS["centerline"], thickness=3)
 
-                        # 2) 白色虚线：过质心的"画面竖直(0°)"——代表用户假定行走朝向
+                        # 2) Белый пунктир: «вертикаль кадра (0°)» через центроид — предполагаемое направление движения пользователя
                         angle_white = 0.0
                         self._draw_dashed_line_vertical_angle(annotated, center_pt, angle_white,
                                                               length_ratio=0.7,
                                                               dash=12, gap=8, color=(255, 255, 255), thickness=2)
 
-                        # 3) 角差显示（可选）：青色 vs 白虚线
+                        # 3) Отображение разницы углов (опционально): голубая vs белый пунктир
                         diff = angle_blue - 0.0  # = angle_blue
-                        diff = (diff + 180.0) % 360.0 - 180.0  # wrap 到 [-180,180]
+                        diff = (diff + 180.0) % 360.0 - 180.0  # привести к [-180,180]
                         cv2.putText(annotated, f"{abs(diff):.1f}°",
                                     (min(center_pt[0] + 12, w - 110), max(center_pt[1] - 12, 30)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-                        # === 用青色法线中央直线 计算"左右偏移" ===
+                        # === Вычисление «смещения влево/вправо» по голубой центральной линии-нормали ===
                         try:
-                            # 注意：_offset_from_centerline 的角度坐标系与 _draw_line_vertical_angle 一致（竖直为0°）
+                            # Внимание: система углов _offset_from_centerline совпадает с _draw_line_vertical_angle (вертикаль = 0°)
                             offset_new = self._offset_from_centerline(center_pt, angle_blue, w, h, y_ratio=0.75)
                             offset = float(offset_new)
                         except Exception:
-                            # 兜底：若计算异常，保持原 offset（默认为0）
+                            # Запасной вариант: при ошибке вычисления оставить прежний offset (по умолчанию 0)
                             pass
 
-                    # 导航方向（基础）
+                    # Направление навигации (базовое)
                     if abs(angle_deg) >= ANGLE_THRESH_DEG:
                         direction = "左转一点" if angle_deg > 0 else "右转一点"
                     elif abs(offset) >= OFFSET_THRESH:
@@ -1664,7 +1664,7 @@ class CrossStreetNavigator:
                     else:
                         direction = "保持直行"
 
-                    # 障碍物引导优先级（近距离优先覆盖方向提示）
+                    # Приоритет подсказок о препятствиях (близкие препятствия перекрывают подсказку направления)
                     obstacle_override = None
                     if detected_obstacles:
                         NEAR_Y = 0.7
@@ -1674,51 +1674,51 @@ class CrossStreetNavigator:
                             name = (near_list[0].get('name') or '障碍物')
                             obstacle_override = self._speech_for_obstacle(name)
 
-                    # 【移除左上角调试信息，改为右上角数据面板】
-                    # 更新右上角数据面板（合并到已有的面板数据中）
+                    # 【Отладочная информация в левом верхнем углу убрана, вместо неё панель данных в правом верхнем углу】
+                    # Обновить панель данных в правом верхнем углу (объединить с уже имеющимися данными панели)
                     src_text = "分割" if not used_tracking else "追踪"
-                    # 数据面板在前面已经添加了，这里只记录调试数据
-                    # 稍后会统一添加完整的数据面板
+                    # Панель данных уже добавлена выше, здесь только записываются отладочные данные
+                    # Полная панель данных будет добавлена позже единым образом
 
-                    # 语音输出（节流）
+                    # Голосовой вывод (с ограничением частоты)
                     if current_time - self.last_guide_time > self.guide_interval:
-                        # 检查是否快走完斑马线
+                        # Проверить, почти ли пройден пешеходный переход
                         is_almost_done = self._is_crosswalk_almost_done(crosswalk_mask, h, w)
                         
-                        # 调试信息：显示判定条件
+                        # Отладочная информация: показать условия определения
                         if self.frame_counter % 30 == 0:
                             ys = np.where(crosswalk_mask > 0)[0]
                             if ys.size > 0:
                                 top_y, bottom_y = int(ys.min()), int(ys.max())
                                 logger.info(f"[CROSS_STREET] area_ratio={area_ratio:.3f}, top_ratio={top_y/h:.3f}, bottom_ratio={bottom_y/h:.3f}, almost_done={is_almost_done}")
                         
-                        # 优先级1：红绿灯警告（绿灯倒计时）
+                        # Приоритет 1: предупреждение светофора (обратный отсчёт зелёного)
                         if traffic_light_warning:
                             guidance_text = traffic_light_warning
                             self.last_guide_time = current_time
-                        # 优先级2：过马路结束提示（斑马线快消失）
+                        # Приоритет 2: подсказка о завершении перехода (переход почти исчез)
                         elif is_almost_done and not self.crossing_end_announced:
                             guidance_text = "过马路结束，准备上人行道。"
                             self.crossing_end_announced = True
                             self.last_guide_time = current_time
-                        # 优先级3：盲道提示（过马路结束后检测到盲道，可重复播报但节流4秒）
+                        # Приоритет 3: подсказка о тактильной дорожке (обнаружена после перехода; можно повторять, но не чаще раза в 4 с)
                         elif self.crossing_end_announced and blindpath_mask is not None:
                             if current_time - self.last_blindpath_announce_time > 4.0:
                                 guidance_text = "远处有盲道，继续前行。"
                                 self.last_blindpath_announce_time = current_time
                                 self.last_guide_time = current_time
-                        # 优先级4：障碍物
+                        # Приоритет 4: препятствия
                         elif obstacle_override:
                             guidance_text = obstacle_override
                             self.last_guide_time = current_time
-                        # 优先级5：方向引导
+                        # Приоритет 5: подсказка направления
                         else:
                             guidance_text = direction
                             self.last_guide_time = current_time
                 else:
-                    # CROSSING 阶段但没有检测到斑马线
+                    # Этап CROSSING, но пешеходный переход не обнаружен
                     no_crosswalk_duration = current_time - self.last_crosswalk_seen_time
-                    # 【移除左上角文字，改为右上角数据面板】
+                    # 【Текст в левом верхнем углу убран, вместо него панель данных в правом верхнем углу】
                     frame_visualizations.append({
                         "type": "data_panel",
                         "data": {
@@ -1728,28 +1728,28 @@ class CrossStreetNavigator:
                         "position": (w - 180, 20)
                     })
                     
-                    # 连续超过10秒没有斑马线，才播报"过马路结束"
+                    # Только если перехода нет более 10 с подряд — озвучить «переход завершён»
                     if no_crosswalk_duration > 10.0:
                         if not self.crossing_end_announced:
                             if current_time - self.last_guide_time > self.guide_interval:
-                                # 优先级1：红绿灯警告
+                                # Приоритет 1: предупреждение светофора
                                 if traffic_light_warning:
                                     guidance_text = traffic_light_warning
                                     self.last_guide_time = current_time
-                                # 优先级2：过马路结束
+                                # Приоритет 2: завершение перехода
                                 else:
                                     guidance_text = "过马路结束，准备上人行道。"
                                     self.crossing_end_announced = True
                                     self.last_guide_time = current_time
-                        # 播报结束后，检测到盲道则重复播报（节流4秒）
+                        # После озвучивания завершения, если обнаружена тактильная дорожка — повторять (не чаще раза в 4 с)
                         elif blindpath_mask is not None:
                             if current_time - self.last_blindpath_announce_time > 4.0:
                                 guidance_text = "远处有盲道，继续前行。"
                                 self.last_blindpath_announce_time = current_time
                                 self.last_guide_time = current_time
 
-            # 【移除帧信息】
-            # 添加底部指令按钮（显示当前状态或引导内容）
+            # 【Информация о кадре убрана】
+            # Добавить кнопку команды внизу (показывает текущее состояние или подсказку)
             if guidance_text:
                 current_instruction = guidance_text
             elif self.state == STATE_SEEKING:
@@ -1762,14 +1762,14 @@ class CrossStreetNavigator:
                 current_instruction = "等待中..."
             annotated = self._draw_command_button(annotated, current_instruction)
 
-            # 统一渲染障碍物等可视化图层（blindpath 风格）
+            # Единая отрисовка слоёв визуализации препятствий и пр. (в стиле blindpath)
             if frame_visualizations:
                 annotated = self._draw_visualizations(annotated, frame_visualizations)
 
-            # 【修改】不在工作流内部播放音频，由app_main统一处理
-            # 直接返回guidance_text给上层调用者（app_main）来播放
+            # 【Изменено】аудио не воспроизводится внутри рабочего процесса, этим централизованно занимается app_main
+            # guidance_text напрямую возвращается вызывающему коду (app_main) для воспроизведения
 
-            # 更新 prev_gray（供障碍物稳定化使用）
+            # Обновить prev_gray (для стабилизации препятствий)
             self.prev_gray = gray
 
             return CrossStreetResult(
@@ -1780,7 +1780,7 @@ class CrossStreetNavigator:
             )
 
         except Exception as e:
-            logger.error(f"[CROSS_STREET] 处理帧时出错: {e}", exc_info=True)
+            logger.error(f"[CROSS_STREET] Ошибка при обработке кадра: {e}", exc_info=True)
             return CrossStreetResult(
                 annotated_image=bgr_image,
                 guidance_text="",
@@ -1789,13 +1789,13 @@ class CrossStreetNavigator:
             )
 
 class YOLOModelWrapper:
-    """YOLO 模型包装器，将 predict 方法适配为 detect"""
+    """Обёртка модели YOLO, адаптирующая метод predict под detect"""
 
     def __init__(self, yolo_model):
         self.model = yolo_model
 
     def detect(self, image, confidence_threshold=0.25):
-        """使用 predict 方法并转换为 detect 格式"""
+        """Вызвать predict и преобразовать результат в формат detect"""
         try:
             results = self.model.predict(image, conf=confidence_threshold, verbose=False)
             detections = []
@@ -1814,5 +1814,5 @@ class YOLOModelWrapper:
                             detections.append(Detection())
             return detections
         except Exception as e:
-            logger.error(f"[YOLO Wrapper] 检测错误: {e}")
+            logger.error(f"[YOLO Wrapper] Ошибка детекции: {e}")
             return []

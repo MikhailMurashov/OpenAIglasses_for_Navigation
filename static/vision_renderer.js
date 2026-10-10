@@ -1,4 +1,4 @@
-// vision_renderer.js - 前端可视化渲染器
+// vision_renderer.js - фронтенд-рендерер визуализации
 
 class VisionRenderer {
     constructor(canvasId) {
@@ -7,7 +7,7 @@ class VisionRenderer {
         this.ws = null;
         this.currentData = null;
         
-        // UI配色方案
+        // Цветовая схема UI
         this.colors = {
             primaryBlue: '#00C8FF',
             secondaryPurple: '#9664FF',
@@ -21,7 +21,7 @@ class VisionRenderer {
             glassBg: 'rgba(20, 20, 20, 0.3)',
         };
         
-        // 动画状态
+        // Состояние анимации
         this.animations = {
             flashAlpha: 0,
             messageAlpha: 1,
@@ -34,7 +34,7 @@ class VisionRenderer {
     }
     
     setupCanvas() {
-        // 设置画布大小
+        // Установка размера холста
         const resizeCanvas = () => {
             const rect = this.canvas.getBoundingClientRect();
             this.canvas.width = rect.width;
@@ -57,7 +57,7 @@ class VisionRenderer {
         this.ws.onclose = () => {
             console.log('[VisionRenderer] Disconnected');
             this.updateConnectionStatus(false);
-            // 自动重连
+            // Автоматическое переподключение
             setTimeout(() => this.connect(), 2000);
         };
         
@@ -101,63 +101,63 @@ class VisionRenderer {
         const W = this.canvas.width;
         const H = this.canvas.height;
         
-        // 渲染手部骨骼
+        // Рендеринг скелета руки
         if (data.hand_detected && data.hand_landmarks) {
             this.drawHandSkeleton(data.hand_landmarks);
             
-            // 手部边界框
+            // Ограничивающая рамка руки
             if (data.hand_box) {
                 this.drawBox(data.hand_box, this.colors.accentCyan, 1);
             }
             
-            // 握持评分
+            // Оценка захвата
             this.drawTextWithBg(
-                `握持评分 Grasp Score: ${data.grasp_score.toFixed(2)}`,
+                `Оценка захвата Grasp Score: ${data.grasp_score.toFixed(2)}`,
                 10, 60, 18, this.colors.accentCyan
             );
         }
         
-        // 渲染检测到的物体
+        // Рендеринг обнаруженных объектов
         if (data.mode === 'SEGMENT' && data.objects) {
             data.objects.forEach((obj, index) => {
                 const isSelected = index === data.selected_object_index;
                 const color = isSelected ? this.colors.success : this.colors.primaryBlue;
                 
-                // 绘制轮廓
+                // Отрисовка контура
                 if (obj.contour) {
                     this.drawContour(obj.contour, color, isSelected ? 3 : 2);
                 }
                 
-                // 选中物体的标记
+                // Метка выбранного объекта
                 if (isSelected && obj.center) {
                     this.drawTargetMarker(obj.center.x, obj.center.y);
                 }
             });
             
-            // 倒计时
+            // Обратный отсчёт
             if (data.countdown !== null) {
                 this.drawCountdown(data.countdown);
             }
         }
         
-        // 闪烁动画
+        // Анимация мигания
         if (data.mode === 'FLASH' && data.flash_progress !== null) {
             this.renderFlashAnimation(data.flash_progress);
         }
         
-        // 追踪模式
+        // Режим отслеживания
         if (data.mode === 'TRACK') {
-            // 追踪多边形
+            // Многоугольник отслеживания
             if (data.tracking_polygon) {
                 this.drawPolygon(data.tracking_polygon, this.colors.success, 2);
             }
             
-            // 中心点
+            // Центральная точка
             if (data.tracking_center) {
                 this.drawCircle(data.tracking_center.x, data.tracking_center.y, 6, this.colors.success);
             }
             
-            // 对齐箭头
+            // Стрелка выравнивания
             if (data.hand_center && data.tracking_center) {
                 this.drawMeasureArrow(
                     data.hand_center,
@@ -165,19 +165,19 @@ class VisionRenderer {
                 );
             }
             
-            // 面积比和引导
+            // Соотношение площадей и подсказки
             if (data.area_ratio !== null) {
                 this.drawAreaRatio(data.area_ratio, data.guidance);
             }
         }
         
-        // 进度条
+        // Индикаторы прогресса
         this.drawTechProgressBars(data.align_score, data.range_score);
         
         // FPS
         this.drawFPS(data.fps);
         
-        // 状态消息
+        // Сообщение о состоянии
         if (data.status_message) {
             this.drawStatusMessage(data.status_message);
         }
@@ -187,17 +187,17 @@ class VisionRenderer {
         const ctx = this.ctx;
         const color = this.colors.secondaryPurple;
         
-        // MediaPipe手部连接
+        // Соединения руки MediaPipe
         const connections = [
-            [0, 1], [1, 2], [2, 3], [3, 4],  // 拇指
-            [0, 5], [5, 6], [6, 7], [7, 8],  // 食指
-            [0, 9], [9, 10], [10, 11], [11, 12],  // 中指
-            [0, 13], [13, 14], [14, 15], [15, 16],  // 无名指
-            [0, 17], [17, 18], [18, 19], [19, 20],  // 小指
-            [5, 9], [9, 13], [13, 17]  // 掌心
+            [0, 1], [1, 2], [2, 3], [3, 4],  // большой палец
+            [0, 5], [5, 6], [6, 7], [7, 8],  // указательный палец
+            [0, 9], [9, 10], [10, 11], [11, 12],  // средний палец
+            [0, 13], [13, 14], [14, 15], [15, 16],  // безымянный палец
+            [0, 17], [17, 18], [18, 19], [19, 20],  // мизинец
+            [5, 9], [9, 13], [13, 17]  // ладонь
         ];
         
-        // 绘制连接线
+        // Отрисовка соединительных линий
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         connections.forEach(([i, j]) => {
@@ -209,7 +209,7 @@ class VisionRenderer {
             }
         });
         
-        // 绘制关键点
+        // Отрисовка ключевых точек
         landmarks.forEach(point => {
             this.drawCircle(point.x, point.y, 3, color, true);
         });
@@ -224,24 +224,24 @@ class VisionRenderer {
         const textWidth = metrics.width;
         const textHeight = fontSize;
         
-        // 绘制背景
+        // Отрисовка фона
         ctx.fillStyle = bgColor;
         ctx.fillRect(x - padding, y - textHeight - padding, 
                      textWidth + 2 * padding, textHeight + 2 * padding);
         
-        // 绘制边框
+        // Отрисовка рамки
         ctx.strokeStyle = this.colors.primaryBlue;
         ctx.lineWidth = 1;
         ctx.strokeRect(x - padding, y - textHeight - padding, 
                        textWidth + 2 * padding, textHeight + 2 * padding);
         
-        // 绘制文字
+        // Отрисовка текста
         ctx.fillStyle = color;
         ctx.fillText(text, x, y);
     }
     
     drawCountdown(seconds) {
-        const text = `检测到物体 Object detected, ${seconds.toFixed(1)}s`;
+        const text = `Обнаружен объект Object detected, ${seconds.toFixed(1)}s`;
         const x = 10;
         const y = 100;
         this.drawTextWithBg(text, x, y, 22, this.colors.warning);
@@ -252,16 +252,16 @@ class VisionRenderer {
         const W = this.canvas.width;
         const H = this.canvas.height;
         
-        // 计算闪烁透明度
+        // Расчёт прозрачности мигания
         const cycleProgress = progress * 2;
         const alpha = 0.3 + 0.3 * Math.sin(cycleProgress * Math.PI);
         
-        // 全屏闪烁效果
+        // Эффект полноэкранного мигания
         ctx.fillStyle = this.colors.accentCyan + Math.floor(alpha * 255).toString(16).padStart(2, '0');
         ctx.fillRect(0, 0, W, H);
         
-        // 锁定文字
-        this.drawTextWithBg('正在锁定目标... Locking target...', 
+        // Текст захвата
+        this.drawTextWithBg('Захват цели... Locking target...', 
                            W/2 - 150, H/2, 24, this.colors.accentCyan);
     }
     
@@ -274,28 +274,28 @@ class VisionRenderer {
         const x0 = 20;
         const y0 = H - 2 * barH - gap - 60;
         
-        // 对齐进度条
+        // Индикатор выравнивания
         this.drawProgressBar(x0, y0, barW, barH, alignScore, 
-                            '对齐 Align', this.colors.primaryBlue);
+                            'Выравнивание Align', this.colors.primaryBlue);
         
-        // 距离进度条
+        // Индикатор расстояния
         this.drawProgressBar(x0, y0 + barH + gap, barW, barH, rangeScore, 
-                            '距离(≈1) Distance(≈1)', this.colors.accentCyan);
+                            'Расстояние(≈1) Distance(≈1)', this.colors.accentCyan);
     }
     
     drawProgressBar(x, y, width, height, value, label, color) {
         const ctx = this.ctx;
         
-        // 背景
+        // Фон
         ctx.fillStyle = this.colors.darkBg;
         ctx.fillRect(x, y, width, height);
         
-        // 边框
+        // Рамка
         ctx.strokeStyle = color;
         ctx.lineWidth = 1;
         ctx.strokeRect(x, y, width, height);
         
-        // 填充（渐变）
+        // Заливка (градиент)
         const fillWidth = width * Math.max(0, Math.min(1, value));
         if (fillWidth > 0) {
             const gradient = ctx.createLinearGradient(x, y, x + fillWidth, y);
@@ -305,7 +305,7 @@ class VisionRenderer {
             ctx.fillRect(x, y, fillWidth, height);
         }
         
-        // 标签
+        // Подпись
         this.drawTextWithBg(label, x, y - 10, 14, color);
     }
     
@@ -350,10 +350,10 @@ class VisionRenderer {
     }
     
     drawTargetMarker(x, y) {
-        // 双圆圈标记
+        // Маркер из двух окружностей
         this.drawCircle(x, y, 8, this.colors.success, false);
         this.drawCircle(x, y, 12, this.colors.success, false);
-        this.drawTextWithBg('目标 Target', x + 15, y - 5, 16, this.colors.success);
+        this.drawTextWithBg('Цель Target', x + 15, y - 5, 16, this.colors.success);
     }
     
     drawMeasureArrow(p1, p2) {
@@ -362,7 +362,7 @@ class VisionRenderer {
         const dy = p2.y - p1.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
         
-        // 绘制线
+        // Отрисовка линии
         ctx.strokeStyle = this.colors.white;
         ctx.lineWidth = 2;
         ctx.setLineDash([5, 5]);
@@ -372,7 +372,7 @@ class VisionRenderer {
         ctx.stroke();
         ctx.setLineDash([]);
         
-        // 绘制箭头
+        // Отрисовка стрелки
         const angle = Math.atan2(dy, dx);
         const arrowLength = 15;
         const arrowAngle = Math.PI / 6;
@@ -390,7 +390,7 @@ class VisionRenderer {
         );
         ctx.stroke();
         
-        // 显示距离
+        // Отображение расстояния
         const midX = (p1.x + p2.x) / 2;
         const midY = (p1.y + p2.y) / 2;
         ctx.fillStyle = this.colors.white;
@@ -400,14 +400,14 @@ class VisionRenderer {
     
     drawAreaRatio(ratio, guidance) {
         const y = 120;
-        const text = `面积比 Area Ratio: ${ratio.toFixed(2)}`;
+        const text = `Соотношение площадей Area Ratio: ${ratio.toFixed(2)}`;
         this.drawTextWithBg(text, 10, y, 18, this.colors.lightGray);
         
         if (guidance) {
             const guidanceText = {
-                'forward': '向前靠近 Move Forward',
-                'backward': '后退 Move Back',
-                'maintain': '保持 Maintain'
+                'forward': 'Подойдите ближе Move Forward',
+                'backward': 'Отойдите назад Move Back',
+                'maintain': 'Держите дистанцию Maintain'
             };
             const guidanceColor = guidance === 'maintain' ? this.colors.success : this.colors.warning;
             this.drawTextWithBg(guidanceText[guidance] || guidance, 
@@ -425,7 +425,7 @@ class VisionRenderer {
         const W = this.canvas.width;
         const H = this.canvas.height;
         
-        // 根据消息类型选择颜色
+        // Выбор цвета в зависимости от типа сообщения
         let color = this.colors.white;
         if (message.includes('追踪丢失') || message.includes('lost')) {
             color = this.colors.error;
@@ -437,7 +437,7 @@ class VisionRenderer {
     }
 }
 
-// 初始化渲染器
+// Инициализация рендерера
 document.addEventListener('DOMContentLoaded', () => {
     window.visionRenderer = new VisionRenderer('canvas');
 }); 

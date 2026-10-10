@@ -1,5 +1,5 @@
 // ===== all_in_one_merged.ino — XIAO ESP32S3 Sense: Camera + Mic (PDM) + IMU (ICM42688 SPI) =====
-// ===== 版本: v2.4-SPIIMU - ICM42688 改为 SPI，避开 I2S 干扰；WAV chunked 播放保持 =====
+// ===== Версия: v2.4-SPIIMU - ICM42688 переведён на SPI, чтобы избежать помех от I2S; chunked-воспроизведение WAV сохранено =====
 
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -12,7 +12,7 @@ struct WavFmt;
 #include <cstring>      // memcmp
 #include <WiFiUdp.h>
 #include <WiFiClient.h> 
-#include <SPI.h>        // <<< 改成 SPI
+#include <SPI.h>        // <<< переведено на SPI
 using namespace websockets;
 
 // ===== WiFi / Server =====
@@ -31,14 +31,14 @@ static const char* AUD_WS_PATH = "/ws_audio";
 framesize_t g_frame_size = FRAMESIZE_VGA;
 #define JPEG_QUALITY  17
 #define FB_COUNT      2
-volatile int g_target_fps = 0; // 新增：0=不限，>0 则按该FPS限速发送
+volatile int g_target_fps = 0; // новое: 0 = без ограничения, >0 — отправка с ограничением до этого FPS
 
-// 【新增】视频传输性能监控
-volatile unsigned long frame_captured_count = 0;  // 采集帧计数
-volatile unsigned long frame_sent_count = 0;      // 发送帧计数
-volatile unsigned long frame_dropped_count = 0;   // 丢弃帧计数
-volatile unsigned long last_stats_time = 0;       // 上次统计时间
-volatile unsigned long ws_send_fail_count = 0;    // WebSocket发送失败计数
+// 【Новое】 Мониторинг производительности передачи видео
+volatile unsigned long frame_captured_count = 0;  // счётчик захваченных кадров
+volatile unsigned long frame_sent_count = 0;      // счётчик отправленных кадров
+volatile unsigned long frame_dropped_count = 0;   // счётчик отброшенных кадров
+volatile unsigned long last_stats_time = 0;       // время последней статистики
+volatile unsigned long ws_send_fail_count = 0;    // счётчик ошибок отправки WebSocket
 
 // ===== Mic (PDM RX) =====
 #define I2S_MIC_CLOCK_PIN 42
@@ -55,7 +55,7 @@ const int AUDIO_QUEUE_DEPTH = 10;
 const int TTS_RATE = 16000;
 
 // ===== IMU (ICM42688 over SPI) / UDP =====
-// 使用 D0~D3 作为 SPI
+// Используем D0~D3 как SPI
 #define IMU_SPI_SCK   1   // D0
 #define IMU_SPI_MOSI  2   // D1
 #define IMU_SPI_MISO  3   // D2
@@ -70,7 +70,7 @@ WebsocketsClient wsCam;
 WebsocketsClient wsAud;
 volatile bool cam_ws_ready = false;
 volatile bool aud_ws_ready = false;
-volatile bool snapshot_in_progress = false; // 抓拍期间暂停实时采集
+volatile bool snapshot_in_progress = false; // на время снимка приостанавливаем захват в реальном времени
 
 typedef camera_fb_t* fb_ptr_t;
 QueueHandle_t qFrames;
@@ -128,8 +128,8 @@ bool init_camera() {
   sensor_t * s = esp_camera_sensor_get();
   if (s) {
 
-    s->set_hmirror(s, 1);  // ★ 新增：水平镜像，与人眼左右一致（1=开，0=关）
-    s->set_vflip(s, 0);    // ★ 新增：垂直翻转；若镜头“倒装”，改为 1
+    s->set_hmirror(s, 1);  // ★ новое: горизонтальное зеркалирование, чтобы лево/право совпадали с глазами (1 = вкл, 0 = выкл)
+    s->set_vflip(s, 0);    // ★ новое: вертикальный переворот; если камера установлена «вверх ногами», поставьте 1
 
     s->set_brightness(s, 0);
     s->set_contrast(s, 1);
@@ -147,12 +147,12 @@ bool init_camera() {
 inline void enqueue_frame(camera_fb_t* fb) {
   if (!fb) return;
   if (xQueueSend(qFrames, &fb, 0) != pdPASS) {
-    // 队列满，丢弃最旧的帧
+    // Очередь заполнена, отбрасываем самый старый кадр
     fb_ptr_t drop = nullptr;
     if (xQueueReceive(qFrames, &drop, 0) == pdPASS) {
       if (drop) {
         esp_camera_fb_return(drop);
-        frame_dropped_count++;  // 统计丢帧
+        frame_dropped_count++;  // учёт отброшенных кадров
       }
     }
     xQueueSend(qFrames, &fb, 0);
@@ -182,14 +182,14 @@ void taskCamCapture(void*) {
         vTaskDelay(pdMS_TO_TICKS(2));
       }
       
-      // 每5秒打印一次采集统计
+      // Каждые 5 секунд выводим статистику захвата
       unsigned long now = millis();
       if (now - last_log > 5000) {
         int queue_waiting = uxQueueMessagesWaiting(qFrames);
         Serial.printf("[CAM-CAP] captured=%lu, queue=%d, fail=%lu\n", 
                       frame_captured_count, queue_waiting, capture_fail_count);
         last_log = now;
-        capture_fail_count = 0;  // 重置失败计数
+        capture_fail_count = 0;  // сброс счётчика ошибок
       }
     } else {
       vTaskDelay(pdMS_TO_TICKS(20));
@@ -207,7 +207,7 @@ void taskCamSend(void*) {
     fb_ptr_t fb = nullptr;
     if (xQueueReceive(qFrames, &fb, pdMS_TO_TICKS(100)) == pdPASS) {
       if (fb && cam_ws_ready) {
-        // 发送节流：若设置了目标FPS，则按周期发，丢弃多余帧由 qFrames 机制承担
+        // Ограничение отправки: если задан целевой FPS, отправляем по периоду; лишние кадры отбрасывает механизм qFrames
         if (g_target_fps > 0) {
           const int period_ms = 1000 / g_target_fps;
           TickType_t now = xTaskGetTickCount();
@@ -224,7 +224,7 @@ void taskCamSend(void*) {
           frame_sent_count++;
           last_sent_time = millis();
           
-          // 监控发送耗时
+          // Мониторинг времени отправки
           if (send_time > 100) {
             Serial.printf("[CAM-SEND] WARNING: send took %lu ms (size=%u)\n", send_time, fb->len);
           }
@@ -239,7 +239,7 @@ void taskCamSend(void*) {
         
         esp_camera_fb_return(fb);
         
-        // 每5秒打印一次发送统计
+        // Каждые 5 секунд выводим статистику отправки
         unsigned long now = millis();
         if (now - last_log > 5000) {
           unsigned long gap = now - last_sent_time;
@@ -252,7 +252,7 @@ void taskCamSend(void*) {
         esp_camera_fb_return(fb); 
       }
     } else {
-      // 队列接收超时，检查是否长时间没有帧
+      // Таймаут получения из очереди, проверяем, не было ли кадров долгое время
       unsigned long now = millis();
       if (cam_ws_ready && last_sent_time > 0 && (now - last_sent_time) > 3000) {
         Serial.printf("[CAM-SEND] WARNING: No frame sent for %lu ms\n", now - last_sent_time);
@@ -339,7 +339,7 @@ static inline void mono16_to_stereo32_msb(const int16_t* in, size_t nSamp, int32
   }
 }
 
-// === chunked 读取辅助 ===
+// === вспомогательные функции chunked-чтения ===
 static bool read_line(WiFiClient& cli, String& line, uint32_t timeout_ms=3000){
   line = "";
   uint32_t t0 = millis();
@@ -460,7 +460,7 @@ static bool parse_wav_header(WiFiClient& cli, WavFmt& fmt, uint32_t& dataRemaini
   }
 }
 
-// ---- HTTP 播放任务
+// ---- Задача HTTP-воспроизведения
 static TaskHandle_t taskHttpPlayHandle = nullptr;
 static volatile bool http_play_running = false;
 
@@ -630,7 +630,7 @@ void taskHttpPlay(void*){
 
     static uint32_t current_out_rate = 0;
     if (current_out_rate != sampleRate) {
-      // 重新配置I2S输出采样率以匹配服务端WAV
+      // Перенастраиваем частоту дискретизации вывода I2S под WAV с сервера
       i2sOut.begin(I2S_MODE_STD, (int)sampleRate, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
       current_out_rate = sampleRate;
       Serial.printf("[I2S OUT] reconfig to %u Hz\n", sampleRate);
@@ -640,7 +640,7 @@ void taskHttpPlay(void*){
       uint8_t inbuf[2048];
       size_t  filled = 0;
 
-      // 根据采样率计算20ms字节数（mono,16bit）
+      // Вычисляем число байт на 20 мс по частоте дискретизации (mono, 16 bit)
       uint32_t bytes20 = (sampleRate * 2 * 20) / 1000; // 16k=640,12k=480,8k=320
       if (bytes20 < 2) bytes20 = 2;
 
@@ -690,7 +690,7 @@ void stopStreamWav(){
 }
 
 // ====================================================================
-// TTS（二进制分片）保留但默认不启用
+// TTS (двоичные фрагменты) сохранён, но по умолчанию отключён
 // ====================================================================
 void taskTTSPlay(void*){
   static int32_t stereo32Buf[1024*2];
@@ -744,7 +744,7 @@ inline void tts_reset_queue(){ if (qTTS) xQueueReset(qTTS); }
 #define BURST_FIRST       REG_TEMP_H
 #define BURST_COUNT       14
 
-// scale (常见默认为 ±16g / ±2000 dps)
+// scale (обычно по умолчанию ±16g / ±2000 dps)
 static const float ACC_LSB_PER_G   = 2048.0f;   // 1 g = 2048 LSB
 static const float GYR_LSB_PER_DPS = 16.4f;     // 1 dps = 16.4 LSB
 static const float G               = 9.80665f;
@@ -816,7 +816,7 @@ bool imu_read_once(float& tempC, float& ax, float& ay, float& az, float& gx, flo
   return true;
 }
 
-// 轻微平滑，便于观察；不改变 UDP 字段名
+// Лёгкое сглаживание для удобства наблюдения; имена полей UDP не меняются
 static const float EMA_ALPHA = 0.20f;
 bool  ema_inited = false;
 float ax_f=0, ay_f=0, az_f=0;
@@ -884,7 +884,7 @@ void setup() {
   init_i2s_in();
   init_i2s_out();
 
-  qFrames = xQueueCreate(3, sizeof(fb_ptr_t));  // 增加到3个缓冲，减少丢帧
+  qFrames = xQueueCreate(3, sizeof(fb_ptr_t));  // увеличено до 3 буферов, чтобы меньше терять кадры
   qAudio  = xQueueCreate(AUDIO_QUEUE_DEPTH, sizeof(AudioChunk));
   qTTS    = xQueueCreate(TTS_QUEUE_DEPTH, sizeof(TTSChunk));
 
@@ -899,7 +899,7 @@ void setup() {
     if (ev == WebsocketsEvent::ConnectionOpened)  { 
       cam_ws_ready = true;  
       Serial.println("[WS-CAM] open");
-      // 重置统计
+      // Сброс статистики
       frame_sent_count = 0;
       frame_dropped_count = 0;
       ws_send_fail_count = 0;
@@ -925,13 +925,13 @@ void setup() {
         if (apply_framesize(fs)) Serial.printf("[CAM] framesize set to %s\n", v.c_str());
         else Serial.printf("[CAM] framesize set failed: %s\n", v.c_str());
       }
-      else if (cmd.startsWith("SET:QUALITY=")) {     // 新增：动态画质
+      else if (cmd.startsWith("SET:QUALITY=")) {     // новое: динамическое качество изображения
         int q = cmd.substring(strlen("SET:QUALITY=")).toInt();
         q = constrain(q, 5, 40);
         sensor_t* s = esp_camera_sensor_get();
         if (s) { s->set_quality(s, q); Serial.printf("[CAM] quality=%d\n", q); }
       }
-      else if (cmd.startsWith("SET:FPS=")) {         // 新增：发送节流FPS
+      else if (cmd.startsWith("SET:FPS=")) {         // новое: ограничение FPS отправки
         int f = cmd.substring(strlen("SET:FPS=")).toInt();
         g_target_fps = (f <= 0 ? 0 : constrain(f, 5, 60));
         Serial.printf("[CAM] target_fps=%d\n", g_target_fps);
@@ -944,11 +944,11 @@ void setup() {
         sensor_t* s = esp_camera_sensor_get();
         framesize_t old_fs = g_frame_size;
         int old_q = JPEG_QUALITY;
-        // 目标分辨率：XGA（若需更高可改为 SXGA/UXGA，视PSRAM稳定性）
+        // Целевое разрешение: XGA (при необходимости можно повысить до SXGA/UXGA, в зависимости от стабильности PSRAM)
         framesize_t target_fs = FRAMESIZE_SXGA;
         if (s) {
           s->set_framesize(s, target_fs);
-          s->set_quality(s, 18); // 数值越小越清晰
+          s->set_quality(s, 18); // чем меньше значение, тем чётче
         }
         vTaskDelay(pdMS_TO_TICKS(500));
         camera_fb_t* fb = esp_camera_fb_get();

@@ -5,21 +5,21 @@ from typing import AsyncGenerator, Dict, Any, List, Optional, Tuple
 
 from openai import OpenAI
 
-# ===== OpenAI 兼容（达摩院 DashScope 兼容模式）=====
+# ===== Совместимость с OpenAI (режим совместимости DashScope от DAMO Academy) =====
 API_KEY = os.getenv("DASHSCOPE_API_KEY", "sk-a9440db694924559ae4ebdc2023d2b9a")
 if not API_KEY:
-    raise RuntimeError("未设置 DASHSCOPE_API_KEY")
+    raise RuntimeError("Не задан DASHSCOPE_API_KEY")
 
 QWEN_MODEL = "qwen-omni-turbo"
 
-# 兼容模式
+# Режим совместимости
 oai_client = OpenAI(
     api_key=API_KEY,
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
 )
 
 class OmniStreamPiece:
-    """对外的统一增量数据：text/audio 二选一或同时。"""
+    """Единый внешний формат инкрементальных данных: text/audio — одно из двух или оба сразу."""
     def __init__(self, text_delta: Optional[str] = None, audio_b64: Optional[str] = None):
         self.text_delta = text_delta
         self.audio_b64  = audio_b64
@@ -30,10 +30,10 @@ async def stream_chat(
     audio_format: str = "wav",
 ) -> AsyncGenerator[OmniStreamPiece, None]:
     """
-    发起一轮 Omni-Turbo ChatCompletions 流式对话：
-    - content_list: OpenAI chat 的 content，多模态（image_url/text）
-    - 以 stream=True 返回
-    - 增量产出：OmniStreamPiece(text_delta=?, audio_b64=?)
+    Запускает один раунд потокового диалога Omni-Turbo ChatCompletions:
+    - content_list: content для OpenAI chat, мультимодальный (image_url/text)
+    - возвращается с stream=True
+    - инкрементальный вывод: OmniStreamPiece(text_delta=?, audio_b64=?)
     """
     completion = oai_client.chat.completions.create(
         model=QWEN_MODEL,
@@ -44,7 +44,7 @@ async def stream_chat(
         stream_options={"include_usage": True},
     )
 
-    # 注意：OpenAI SDK 的流是同步迭代器；在 async 场景下逐项 yield
+    # Внимание: поток OpenAI SDK — синхронный итератор; в async-сценарии делаем yield поэлементно
     for chunk in completion:
         text_delta: Optional[str] = None
         audio_b64: Optional[str] = None
@@ -52,12 +52,12 @@ async def stream_chat(
         if getattr(chunk, "choices", None):
             c0 = chunk.choices[0]
             delta = getattr(c0, "delta", None)
-            # 文本增量
+            # Инкремент текста
             if delta and getattr(delta, "content", None):
                 piece = delta.content
                 if piece:
                     text_delta = piece
-            # 音频分片
+            # Фрагмент аудио
             if delta and getattr(delta, "audio", None):
                 aud = delta.audio
                 audio_b64 = aud.get("data") if isinstance(aud, dict) else getattr(aud, "data", None)

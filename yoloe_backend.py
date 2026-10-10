@@ -5,7 +5,7 @@ import os
 import cv2
 import numpy as np
 
-# 兼容 YOLOE / YOLO
+# Совместимость с YOLOE / YOLO
 try:
     from ultralytics import YOLOE as _MODEL
 except Exception:
@@ -21,7 +21,7 @@ class YoloEBackend:
         self.device = device
 
     def set_text_classes(self, names: List[str]):
-        # YOLOE 文本提示：与你模板一致
+        # Текстовые подсказки YOLOE: как в вашем шаблоне
         self.model.set_classes(names, self.model.get_text_pe(names))
 
     def segment(self,
@@ -32,7 +32,7 @@ class YoloEBackend:
                 persist: bool = True
                 ) -> Dict[str, Any]:
         """
-        返回:
+        Возвращает:
           dict{
             'masks': List[np.uint8(H,W)],      # 0/1 mask
             'boxes': List[Tuple[x1,y1,x2,y2]],

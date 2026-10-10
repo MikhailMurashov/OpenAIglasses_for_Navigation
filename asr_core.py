@@ -53,7 +53,7 @@ def _extract_sentence(event_obj: Any) -> Tuple[Optional[str], Optional[bool]]:
             return obj.get("text"), None
     return None, None
 
-# ====== 仅热词触发的“全清零复位”配置 ======
+# ====== Настройки «полного сброса», срабатывающего только по горячим словам ======
 INTERRUPT_KEYWORDS = set(
     os.getenv("INTERRUPT_KEYWORDS", "停下,别说了,停止").split(",")
 )
@@ -67,7 +67,7 @@ def _normalize_cn(s: str) -> str:
         s = (s or "").strip().lower()
     return s
 
-# ============ ASR 全局总闸 ============
+# ============ Глобальный рубильник ASR ============
 _current_recognition: Optional[object] = None
 _rec_lock = asyncio.Lock()
 
@@ -83,17 +83,17 @@ async def stop_current_recognition():
         _current_recognition = None
     if r:
         try:
-            r.stop()  # DashScope SDK 的实时识别停止
+            r.stop()  # остановка распознавания в реальном времени в DashScope SDK
         except Exception:
             pass
 
-# ============ ASR 回调 ============
+# ============ Колбэк ASR ============
 class ASRCallback:
     """
-    设计目标：
-    1) “停下 / 别说了 …”等热词一出现 → 立刻全清零复位（恢复到刚启动后的状态）。
-    2) 除此之外【不接受打断】；AI 正在播报时，用户说话只做展示，不触发新一轮。
-    3) 不再用 partial 叠加字符串；partial 只用于 UI 临时展示；只有 final sentence 用于驱动 AI。
+    Цели дизайна:
+    1) Как только звучит горячее слово вроде «停下 / 别说了 …» → немедленный полный сброс (возврат в состояние сразу после запуска).
+    2) Во всех остальных случаях [прерывание не принимается]; пока AI говорит, речь пользователя только отображается и не запускает новый раунд.
+    3) partial больше не склеиваются в строку; partial используется только для временного отображения в UI; AI управляется только final sentence.
     """
 
     def __init__(
@@ -109,9 +109,9 @@ class ASRCallback:
     ):
         self._on_sdk_error = on_sdk_error
         self._post = post
-        self._last_partial_for_ui: str = ""   # 只用于 UI 展示
-        self._last_final_text: str = ""       # 以句末 final 为准
-        self._hot_interrupted: bool = False   # 本句是否因热词触发过复位（防抖）
+        self._last_partial_for_ui: str = ""   # только для отображения в UI
+        self._last_final_text: str = ""       # опираемся на final в конце фразы
+        self._hot_interrupted: bool = False   # был ли в этой фразе сброс по горячему слову (антидребезг)
 
         self._ui_partial = ui_broadcast_partial
         self._ui_final   = ui_broadcast_final
@@ -157,7 +157,7 @@ class ASRCallback:
         if not text:
             return
 
-        # ---------- ① 热词优先：命中就全清零并短路，绝不送 LLM ----------
+        # ---------- ① Приоритет горячих слов: при совпадении — полный сброс и выход, в LLM не отправляем ----------
         if not self._hot_interrupted and self._has_hotword(text):
             self._hot_interrupted = True
 
@@ -171,7 +171,7 @@ class ASRCallback:
                 pass
             return
 
-        # ---------- ② partial：仅用于 UI 展示 ----------
+        # ---------- ② partial: только для отображения в UI ----------
         self._last_partial_for_ui = text
         try:
             print(f"[ASR PARTIAL] len={len(text)} text='{_shorten(text)}'", flush=True)
@@ -179,7 +179,7 @@ class ASRCallback:
         except Exception:
             pass
 
-        # ---------- ③ final：仅 final 驱动 LLM（若未在播报） ----------
+        # ---------- ③ final: только final запускает LLM (если не идёт озвучивание) ----------
         if is_end is True:
             final_text = text
             try:
@@ -198,7 +198,7 @@ class ASRCallback:
                 except Exception:
                     pass
 
-            # 复位进入下一句
+            # сброс и переход к следующей фразе
             self._last_partial_for_ui = ""
             self._last_final_text = ""
             self._hot_interrupted = False

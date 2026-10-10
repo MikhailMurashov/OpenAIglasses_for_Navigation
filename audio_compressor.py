@@ -1,8 +1,8 @@
 # audio_compressor.py
 # -*- coding: utf-8 -*-
 """
-音频压缩工具 - 用于减少网络带宽占用
-支持将16kHz 16bit PCM压缩为更小的格式
+Инструмент сжатия аудио — для снижения нагрузки на сеть
+Поддерживает сжатие PCM 16 кГц 16 бит в более компактные форматы
 """
 import os
 import wave
@@ -14,18 +14,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 class AudioCompressor:
-    """音频压缩器 - 支持多种压缩算法"""
+    """Компрессор аудио — поддерживает несколько алгоритмов сжатия"""
     
     @staticmethod
     def pcm16_to_ulaw(pcm_data: bytes) -> bytes:
         """
-        将16位PCM转换为8位μ-law
-        压缩率：50%（16bit -> 8bit）
+        Преобразовать 16-битный PCM в 8-битный μ-law
+        Степень сжатия: 50% (16 бит -> 8 бит)
         """
-        # 解析16位PCM
+        # Разбираем 16-битный PCM
         samples = np.frombuffer(pcm_data, dtype=np.int16)
         
-        # μ-law压缩
+        # Сжатие μ-law
         ulaw_data = bytearray()
         for sample in samples:
             ulaw_byte = AudioCompressor._linear_to_ulaw(sample)
@@ -36,7 +36,7 @@ class AudioCompressor:
     @staticmethod
     def ulaw_to_pcm16(ulaw_data: bytes) -> bytes:
         """
-        将8位μ-law转换回16位PCM
+        Преобразовать 8-битный μ-law обратно в 16-битный PCM
         """
         pcm_samples = []
         for ulaw_byte in ulaw_data:
@@ -48,29 +48,29 @@ class AudioCompressor:
     @staticmethod
     def _linear_to_ulaw(sample: int) -> int:
         """
-        16位线性PCM转μ-law
+        16-битный линейный PCM в μ-law
         """
-        # μ-law编码表
+        # Таблица кодирования μ-law
         ULAW_MAX = 0x1FFF
         ULAW_BIAS = 0x84
         
-        # 限制范围
+        # Ограничиваем диапазон
         sample = max(-32768, min(32767, sample))
         
-        # 获取符号位
+        # Получаем знаковый бит
         sign = 0
         if sample < 0:
             sign = 0x80
             sample = -sample
         
-        # 添加偏置
+        # Добавляем смещение
         sample = sample + ULAW_BIAS
         
-        # 限制最大值
+        # Ограничиваем максимальное значение
         if sample > ULAW_MAX:
             sample = ULAW_MAX
         
-        # 查找指数和尾数
+        # Находим экспоненту и мантиссу
         exponent = 7
         for exp in range(7, -1, -1):
             if sample & (0x4000 >> exp):
@@ -85,7 +85,7 @@ class AudioCompressor:
     @staticmethod
     def _ulaw_to_linear(ulawbyte: int) -> int:
         """
-        μ-law转16位线性PCM
+        μ-law в 16-битный линейный PCM
         """
         ULAW_BIAS = 0x84
         
@@ -104,13 +104,13 @@ class AudioCompressor:
     @staticmethod
     def pcm16_to_adpcm(pcm_data: bytes) -> bytes:
         """
-        将16位PCM转换为4位ADPCM
-        压缩率：75%（16bit -> 4bit）
-        保持较好的语音质量
+        Преобразовать 16-битный PCM в 4-битный ADPCM
+        Степень сжатия: 75% (16 бит -> 4 бита)
+        Сохраняет хорошее качество речи
         """
         samples = np.frombuffer(pcm_data, dtype=np.int16)
         
-        # IMA ADPCM 步长表
+        # Таблица шагов IMA ADPCM
         step_table = [
             7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
             19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
@@ -123,15 +123,15 @@ class AudioCompressor:
             15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
         ]
         
-        # 索引调整表
+        # Таблица корректировки индекса
         index_table = [-1, -1, -1, -1, 2, 4, 6, 8]
         
-        # 初始化
+        # Инициализация
         adpcm_data = bytearray()
         predicted = 0
         step_index = 0
         
-        # 每两个样本打包成一个字节
+        # Каждые два отсчёта упаковываются в один байт
         for i in range(0, len(samples), 2):
             byte = 0
             
@@ -139,10 +139,10 @@ class AudioCompressor:
                 if i + j < len(samples):
                     sample = samples[i + j]
                     
-                    # 计算差值
+                    # Вычисляем разность
                     diff = sample - predicted
                     
-                    # 量化
+                    # Квантование
                     step = step_table[step_index]
                     adpcm_sample = 0
                     
@@ -163,7 +163,7 @@ class AudioCompressor:
                     if diff >= step:
                         adpcm_sample |= 1
                     
-                    # 更新预测值
+                    # Обновляем предсказанное значение
                     step = step_table[step_index]
                     diff = 0
                     if adpcm_sample & 4:
@@ -182,20 +182,20 @@ class AudioCompressor:
                     else:
                         predicted += diff
                     
-                    # 限制预测值范围
+                    # Ограничиваем диапазон предсказанного значения
                     if predicted > 32767:
                         predicted = 32767
                     elif predicted < -32768:
                         predicted = -32768
                     
-                    # 更新步长索引
+                    # Обновляем индекс шага
                     step_index += index_table[adpcm_sample & 7]
                     if step_index < 0:
                         step_index = 0
                     elif step_index > 88:
                         step_index = 88
                     
-                    # 打包到字节中
+                    # Упаковываем в байт
                     if j == 0:
                         byte = adpcm_sample
                     else:
@@ -203,23 +203,23 @@ class AudioCompressor:
             
             adpcm_data.append(byte)
         
-        # 添加头部信息：初始预测值和步长索引
+        # Добавляем заголовок: начальное предсказанное значение и индекс шага
         header = struct.pack('<hB', predicted, step_index)
         return header + bytes(adpcm_data)
     
     @staticmethod
     def adpcm_to_pcm16(adpcm_data: bytes) -> bytes:
         """
-        将4位ADPCM转换回16位PCM
+        Преобразовать 4-битный ADPCM обратно в 16-битный PCM
         """
         if len(adpcm_data) < 3:
             return b''
         
-        # 读取头部
+        # Читаем заголовок
         predicted, step_index = struct.unpack('<hB', adpcm_data[:3])
         adpcm_bytes = adpcm_data[3:]
         
-        # IMA ADPCM 步长表
+        # Таблица шагов IMA ADPCM
         step_table = [
             7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
             19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
@@ -232,17 +232,17 @@ class AudioCompressor:
             15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
         ]
         
-        # 索引调整表
+        # Таблица корректировки индекса
         index_table = [-1, -1, -1, -1, 2, 4, 6, 8]
         
         pcm_samples = []
         
         for byte in adpcm_bytes:
-            # 解码两个4位样本
+            # Декодируем два 4-битных отсчёта
             for shift in [0, 4]:
                 adpcm_sample = (byte >> shift) & 0x0F
                 
-                # 计算差值
+                # Вычисляем разность
                 step = step_table[step_index]
                 diff = 0
                 
@@ -262,7 +262,7 @@ class AudioCompressor:
                 else:
                     predicted += diff
                 
-                # 限制范围
+                # Ограничиваем диапазон
                 if predicted > 32767:
                     predicted = 32767
                 elif predicted < -32768:
@@ -270,7 +270,7 @@ class AudioCompressor:
                 
                 pcm_samples.append(predicted)
                 
-                # 更新步长索引
+                # Обновляем индекс шага
                 step_index += index_table[adpcm_sample & 7]
                 if step_index < 0:
                     step_index = 0
@@ -282,20 +282,20 @@ class AudioCompressor:
     @staticmethod
     def downsample_pcm16(pcm_data: bytes, from_rate: int = 16000, to_rate: int = 8000) -> bytes:
         """
-        降采样（可选）
-        16kHz -> 8kHz 可以再减少50%数据量
+        Понижение частоты дискретизации (опционально)
+        16 кГц -> 8 кГц позволяет сократить объём данных ещё на 50%
         """
         if from_rate == to_rate:
             return pcm_data
             
-        # 解析PCM数据
+        # Разбираем PCM-данные
         samples = np.frombuffer(pcm_data, dtype=np.int16)
         
-        # 简单的降采样（每隔一个样本取一个）
+        # Простое понижение частоты (берём каждый второй отсчёт)
         if from_rate == 16000 and to_rate == 8000:
             downsampled = samples[::2]
         else:
-            # 更复杂的重采样需要scipy
+            # Для более сложной передискретизации нужен scipy
             ratio = to_rate / from_rate
             new_length = int(len(samples) * ratio)
             downsampled = np.interp(
@@ -308,7 +308,7 @@ class AudioCompressor:
 
 
 class CompressedAudioCache:
-    """压缩音频缓存"""
+    """Кэш сжатого аудио"""
     
     def __init__(self, compression_type: str = "adpcm", use_downsample: bool = False):
         """
@@ -320,103 +320,103 @@ class CompressedAudioCache:
         self._original_sizes = {}  # {filepath: original_size}
         
     def load_and_compress(self, filepath: str) -> Optional[bytes]:
-        """加载并压缩音频文件（统一转换为8kHz）"""
+        """Загрузить и сжать аудиофайл (с приведением к 8 кГц)"""
         if filepath in self._cache:
             return self._cache[filepath]
         
         try:
             with wave.open(filepath, 'rb') as wav:
-                # 检查格式
+                # Проверяем формат
                 channels = wav.getnchannels()
                 sampwidth = wav.getsampwidth()
                 framerate = wav.getframerate()
                 
                 if channels != 1:
-                    logger.warning(f"{filepath} 不是单声道")
+                    logger.warning(f"{filepath} не моно")
                 if sampwidth != 2:
-                    logger.warning(f"{filepath} 不是16位音频")
+                    logger.warning(f"{filepath} не 16-битное аудио")
                 
-                # 读取所有数据
+                # Читаем все данные
                 frames = wav.readframes(wav.getnframes())
                 
-                # 如果是立体声，转换为单声道
+                # Если стерео — преобразуем в моно
                 if channels == 2:
                     import audioop
                     frames = audioop.tomono(frames, sampwidth, 1, 0)
                 
-                # 【修改】始终转换为8kHz（使用ratecv保证音调和速度不变）
+                # 【Изменено】всегда приводим к 8 кГц (ratecv сохраняет высоту тона и скорость)
                 if framerate != 8000:
                     import audioop
                     frames, _ = audioop.ratecv(frames, sampwidth, 1, framerate, 8000, None)
                     framerate = 8000
                 
-                # 记录原始大小（转换后的大小）
+                # Запоминаем исходный размер (размер после преобразования)
                 self._original_sizes[filepath] = len(frames)
                 
-                # 压缩
+                # Сжатие
                 if self.compression_type == "ulaw":
                     compressed = AudioCompressor.pcm16_to_ulaw(frames)
-                    # 添加简单的头部信息（1字节标识 + 4字节原始长度）
-                    header = struct.pack('!BI', 0x01, len(frames))  # 0x01表示μ-law
+                    # Добавляем простой заголовок (1 байт — тип + 4 байта — исходная длина)
+                    header = struct.pack('!BI', 0x01, len(frames))  # 0x01 означает μ-law
                     compressed = header + compressed
                 elif self.compression_type == "adpcm":
                     compressed = AudioCompressor.pcm16_to_adpcm(frames)
-                    # 添加简单的头部信息（1字节标识 + 4字节原始长度）
-                    header = struct.pack('!BI', 0x02, len(frames))  # 0x02表示ADPCM
+                    # Добавляем простой заголовок (1 байт — тип + 4 байта — исходная длина)
+                    header = struct.pack('!BI', 0x02, len(frames))  # 0x02 означает ADPCM
                     compressed = header + compressed
                 else:
                     compressed = frames
                 
                 self._cache[filepath] = compressed
                 
-                # 打印压缩率
+                # Выводим степень сжатия
                 compression_ratio = len(compressed) / self._original_sizes[filepath]
-                logger.info(f"[压缩] {os.path.basename(filepath)}: "
+                logger.info(f"[Сжатие] {os.path.basename(filepath)}: "
                           f"{self._original_sizes[filepath]} -> {len(compressed)} bytes "
                           f"({compression_ratio:.1%})")
                 
                 return compressed
                 
         except Exception as e:
-            logger.error(f"压缩音频失败 {filepath}: {e}")
+            logger.error(f"Не удалось сжать аудио {filepath}: {e}")
             return None
     
     def decompress(self, compressed_data: bytes) -> Optional[bytes]:
-        """解压音频数据"""
+        """Распаковать аудиоданные"""
         if not compressed_data or len(compressed_data) < 5:
             return compressed_data
         
         try:
-            # 检查头部
+            # Проверяем заголовок
             compression_type = compressed_data[0]
-            if compression_type == 0x01:  # μ-law标识
+            if compression_type == 0x01:  # Признак μ-law
                 header_size = 5
                 original_length = struct.unpack('!I', compressed_data[1:5])[0]
                 ulaw_data = compressed_data[header_size:]
                 
-                # μ-law解压
+                # Распаковка μ-law
                 pcm_data = AudioCompressor.ulaw_to_pcm16(ulaw_data)
                 
                 return pcm_data
-            elif compression_type == 0x02:  # ADPCM标识
+            elif compression_type == 0x02:  # Признак ADPCM
                 header_size = 5
                 original_length = struct.unpack('!I', compressed_data[1:5])[0]
                 adpcm_data = compressed_data[header_size:]
                 
-                # ADPCM解压
+                # Распаковка ADPCM
                 pcm_data = AudioCompressor.adpcm_to_pcm16(adpcm_data)
                 
                 return pcm_data
             else:
-                # 未压缩的数据
+                # Несжатые данные
                 return compressed_data
                 
         except Exception as e:
-            logger.error(f"解压音频失败: {e}")
+            logger.error(f"Не удалось распаковать аудио: {e}")
             return compressed_data
     
     def get_compression_stats(self) -> dict:
-        """获取压缩统计信息"""
+        """Получить статистику сжатия"""
         total_original = sum(self._original_sizes.values())
         total_compressed = sum(len(data) for data in self._cache.values())
         
@@ -429,9 +429,9 @@ class CompressedAudioCache:
         }
 
 
-# 全局压缩音频缓存实例
-# 默认使用ADPCM压缩，音质更好，压缩率也不错（75%）
-# 可通过环境变量 AIGLASS_COMPRESS_TYPE 设置: none, ulaw, adpcm
+# Глобальный экземпляр кэша сжатого аудио
+# По умолчанию используется сжатие ADPCM: качество звука лучше, а степень сжатия тоже неплохая (75%)
+# Можно задать через переменную окружения AIGLASS_COMPRESS_TYPE: none, ulaw, adpcm
 import os
 compression_type = os.getenv("AIGLASS_COMPRESS_TYPE", "adpcm").lower()
 if compression_type not in ["none", "ulaw", "adpcm"]:

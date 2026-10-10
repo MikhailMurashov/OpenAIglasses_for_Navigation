@@ -1,155 +1,156 @@
 @echo off
-REM AI Glass System - Windows 快速安装脚本
+chcp 65001 >nul
+REM AI Glass System - скрипт быстрой установки для Windows
 
 echo ==========================================
-echo   AI Glass System - 自动安装脚本
+echo   AI Glass System - скрипт автоматической установки
 echo ==========================================
 echo.
 
-REM 检查 Python
-echo 正在检查 Python...
+REM Проверка Python
+echo Проверка Python...
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [错误] 未找到 Python
-    echo 请从 https://www.python.org/downloads/ 下载并安装 Python 3.9-3.11
+    echo [ОШИБКА] Python не найден
+    echo Скачайте и установите Python 3.9-3.11 с https://www.python.org/downloads/
     pause
     exit /b 1
 )
 
 python --version
-echo [成功] Python 已安装
+echo [УСПЕХ] Python установлен
 
-REM 检查 CUDA
+REM Проверка CUDA
 echo.
-echo 正在检查 CUDA...
+echo Проверка CUDA...
 nvidia-smi >nul 2>&1
 if errorlevel 1 (
-    echo [警告] 未检测到 NVIDIA GPU，将使用 CPU 模式（速度较慢）
+    echo [ВНИМАНИЕ] NVIDIA GPU не обнаружен, будет использован режим CPU — работает медленнее
     set HAS_GPU=0
 ) else (
-    echo [成功] 检测到 NVIDIA GPU
+    echo [УСПЕХ] Обнаружен NVIDIA GPU
     nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
     set HAS_GPU=1
 )
 
-REM 创建虚拟环境
+REM Создание виртуального окружения
 echo.
-echo 正在创建虚拟环境...
+echo Создание виртуального окружения...
 if exist venv (
-    echo [警告] 虚拟环境已存在
-    set /p RECREATE="是否删除并重新创建? (y/n): "
+    echo [ВНИМАНИЕ] Виртуальное окружение уже существует
+    set /p RECREATE="Удалить и создать заново? (y/n): "
     if /i "%RECREATE%"=="y" (
         rmdir /s /q venv
         python -m venv venv
-        echo [成功] 虚拟环境已重新创建
+        echo [УСПЕХ] Виртуальное окружение создано заново
     )
 ) else (
     python -m venv venv
-    echo [成功] 虚拟环境已创建
+    echo [УСПЕХ] Виртуальное окружение создано
 )
 
-REM 激活虚拟环境
+REM Активация виртуального окружения
 echo.
-echo 正在激活虚拟环境...
+echo Активация виртуального окружения...
 call venv\Scripts\activate.bat
 
-REM 升级 pip
+REM Обновление pip
 echo.
-echo 正在升级 pip...
+echo Обновление pip...
 python -m pip install --upgrade pip -q
-echo [成功] pip 已升级
+echo [УСПЕХ] pip обновлён
 
-REM 安装 PyTorch
+REM Установка PyTorch
 echo.
-echo 正在安装 PyTorch...
+echo Установка PyTorch...
 if %HAS_GPU%==1 (
-    echo 安装 GPU 版本 PyTorch ^(CUDA 11.8^)...
+    echo Установка GPU-версии PyTorch ^(CUDA 11.8^)...
     pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 --index-url https://download.pytorch.org/whl/cu118 -q
 ) else (
-    echo 安装 CPU 版本 PyTorch...
+    echo Установка CPU-версии PyTorch...
     pip install torch torchvision -q
 )
-echo [成功] PyTorch 已安装
+echo [УСПЕХ] PyTorch установлен
 
-REM 验证 PyTorch
+REM Проверка PyTorch
 echo.
-echo 验证 PyTorch 安装...
-python -c "import torch; print(f'PyTorch 版本: {torch.__version__}'); print(f'CUDA 可用: {torch.cuda.is_available()}')"
+echo Проверка установки PyTorch...
+python -c "import torch; print(f'Версия PyTorch: {torch.__version__}'); print(f'CUDA доступна: {torch.cuda.is_available()}')"
 
-REM 安装 PyAudio
+REM Установка PyAudio
 echo.
-echo 正在安装 PyAudio...
-echo [警告] PyAudio 在 Windows 上可能需要手动安装
-echo 如果自动安装失败，请从以下地址下载 wheel 文件:
+echo Установка PyAudio...
+echo [ВНИМАНИЕ] В Windows PyAudio может потребовать ручной установки
+echo Если автоматическая установка не удастся, скачайте wheel-файл по адресу:
 echo https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio
 echo.
 pip install pyaudio -q
 if errorlevel 1 (
-    echo [警告] PyAudio 自动安装失败，请手动安装
+    echo [ВНИМАНИЕ] Не удалось автоматически установить PyAudio, установите вручную
 ) else (
-    echo [成功] PyAudio 已安装
+    echo [УСПЕХ] PyAudio установлен
 )
 
-REM 安装其他依赖
+REM Установка остальных зависимостей
 echo.
-echo 正在安装 Python 依赖...
+echo Установка зависимостей Python...
 pip install -r requirements.txt -q
-echo [成功] Python 依赖已安装
+echo [УСПЕХ] Зависимости Python установлены
 
-REM 创建 .env 文件
+REM Создание файла .env
 echo.
 if not exist .env (
-    echo 正在创建 .env 配置文件...
+    echo Создание конфигурационного файла .env...
     copy .env.example .env >nul
-    echo [成功] .env 文件已创建
-    echo [提示] 请编辑 .env 文件，填入您的 DASHSCOPE_API_KEY
+    echo [УСПЕХ] Файл .env создан
+    echo [ПОДСКАЗКА] Отредактируйте файл .env и укажите свой DASHSCOPE_API_KEY
 ) else (
-    echo [跳过] .env 文件已存在
+    echo [ПРОПУСК] Файл .env уже существует
 )
 
-REM 创建必要的目录
+REM Создание необходимых директорий
 echo.
-echo 正在创建目录结构...
+echo Создание структуры директорий...
 if not exist recordings mkdir recordings
 if not exist model mkdir model
 if not exist music mkdir music
 if not exist voice mkdir voice
-echo [成功] 目录结构已创建
+echo [УСПЕХ] Структура директорий создана
 
-REM 检查模型文件
+REM Проверка файлов моделей
 echo.
-echo 正在检查模型文件...
+echo Проверка файлов моделей...
 set MISSING=0
-if exist model\yolo-seg.pt (echo [成功] yolo-seg.pt) else (echo [缺失] yolo-seg.pt & set MISSING=1)
-if exist model\yoloe-11l-seg.pt (echo [成功] yoloe-11l-seg.pt) else (echo [缺失] yoloe-11l-seg.pt & set MISSING=1)
-if exist model\shoppingbest5.pt (echo [成功] shoppingbest5.pt) else (echo [缺失] shoppingbest5.pt & set MISSING=1)
-if exist model\trafficlight.pt (echo [成功] trafficlight.pt) else (echo [缺失] trafficlight.pt & set MISSING=1)
-if exist model\hand_landmarker.task (echo [成功] hand_landmarker.task) else (echo [缺失] hand_landmarker.task & set MISSING=1)
+if exist model\yolo-seg.pt (echo [УСПЕХ] yolo-seg.pt) else (echo [НЕТ ФАЙЛА] yolo-seg.pt & set MISSING=1)
+if exist model\yoloe-11l-seg.pt (echo [УСПЕХ] yoloe-11l-seg.pt) else (echo [НЕТ ФАЙЛА] yoloe-11l-seg.pt & set MISSING=1)
+if exist model\shoppingbest5.pt (echo [УСПЕХ] shoppingbest5.pt) else (echo [НЕТ ФАЙЛА] shoppingbest5.pt & set MISSING=1)
+if exist model\trafficlight.pt (echo [УСПЕХ] trafficlight.pt) else (echo [НЕТ ФАЙЛА] trafficlight.pt & set MISSING=1)
+if exist model\hand_landmarker.task (echo [УСПЕХ] hand_landmarker.task) else (echo [НЕТ ФАЙЛА] hand_landmarker.task & set MISSING=1)
 
 if %MISSING%==1 (
     echo.
-    echo [警告] 部分模型文件缺失，请将模型文件放入 model\ 目录
+    echo [ВНИМАНИЕ] Некоторые файлы моделей отсутствуют, поместите их в директорию model\
 )
 
-REM 完成
+REM Готово
 echo.
 echo ==========================================
-echo [成功] 安装完成!
+echo [УСПЕХ] Установка завершена!
 echo ==========================================
 echo.
-echo 下一步:
-echo 1. 编辑 .env 文件，填入您的 API 密钥:
+echo Дальнейшие шаги:
+echo 1. Отредактируйте файл .env и укажите свой API-ключ:
 echo    notepad .env
 echo.
-echo 2. 确保所有模型文件已放入 model\ 目录
+echo 2. Убедитесь, что все файлы моделей помещены в директорию model\
 echo.
-echo 3. 启动系统:
+echo 3. Запустите систему:
 echo    venv\Scripts\activate
 echo    python app_main.py
 echo.
-echo 4. 访问 http://localhost:8081
+echo 4. Откройте http://localhost:8081
 echo.
-echo [提示] 每次使用前请激活虚拟环境:
+echo [ПОДСКАЗКА] Перед каждым использованием активируйте виртуальное окружение:
 echo   venv\Scripts\activate
 echo.
 
